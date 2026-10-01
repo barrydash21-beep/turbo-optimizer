@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Shizuku Permissions -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+    <!--
+        Declared only so it can be named as the ShizukuProvider guard below, which is the
+        official Shizuku-API snippet. It is signature|privileged, so a normal app is never
+        granted it, and that is the point: it keeps every other app out of the provider.
+    -->
+    <uses-permission
+        android:name="android.permission.INTERACT_ACROSS_USERS_FULL"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- Required to configure the local VPN -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Normal permission: lets us suspend master auto-sync during a boost -->
+    <uses-permission android:name="android.permission.WRITE_SYNC_SETTINGS" />
+
+    <!-- Notifications for the game monitor and stabilizer; denial is handled gracefully -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- The stabilizer tunnel runs in the foreground so it is not evicted mid-game -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Package visibility (Android 11+): Shizuku, the apps below, and launchable apps for the game picker -->
+    <queries>
+        <!-- Any app with a launcher icon can be added as a game -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+
+        <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="com.rikka.shizuku" />
+
+        <!-- Targeted background apps for optimization -->
+        <package android:name="com.facebook.katana" />
+        <package android:name="com.instagram.android" />
+        <package android:name="com.zhiliaoapp.musically" />
+
+        <!-- Exempted from the traffic blocker (NetworkBlockerVpnService) -->
+        <package android:name="com.google.android.gms" />
+        <package android:name="com.google.android.gsf" />
+
+        <intent>
+            <action android:name="rikka.shizuku.intent.action.BIND_SERVICE" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.TurboBoost">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.TurboBoost">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            ShizukuProvider is required for the Shizuku manager to communicate with this app.
+            The authority must end with ".shizuku".
+            We add the INTERACT_ACROSS_USERS_FULL permission requirement to ensure only
+            authorized system/shell services (like Shizuku manager) can send the binder.
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!--
+            The VPN Service Block.
+
+            foregroundServiceType: Android 14 requires a type on every foreground service.
+            "systemExempted" is the documented VPN category, but the platform throws
+            ForegroundServiceTypeNotAllowedException if it decides the app does not qualify,
+            which would take the tunnel down. "specialUse" is always accepted, and the code
+            degrades to a plain started service if startForeground is refused anyway.
+        -->
+        <service
+            android:name=".NetworkBlockerVpnService"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the user-started traffic-blocking VPN tunnel alive while the user is in-game" />
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+
+        <!--
+            Watches for the selected game to exit, samples its FPS and thermal status, and
+            reverts the gaming tweaks. specialUse for the same reason as the VPN service above
+            (API 34 needs a type; no system category fits).
+        -->
+        <service
+            android:name=".GameMonitorService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Polls whether the user-launched game is still running so display tweaks can be reverted when it exits, and samples its frame rate and thermal status for the session summary" />
+        </service>
+
+    </application>
+</manifest>

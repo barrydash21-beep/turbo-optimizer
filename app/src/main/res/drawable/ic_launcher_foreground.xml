@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TurboBoost: reticle ring (aim) + bolt (power/speed) + settled ping line (stable latency). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Reticle ring, four arcs with gaps at N/E/S/W -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M58.17,30.36A24,24 0 0,1 77.64,49.83 M77.64,58.17A24,24 0 0,1 58.17,77.64 M49.83,77.64A24,24 0 0,1 30.36,58.17 M30.36,49.83A24,24 0 0,1 49.83,30.36"
+        android:strokeColor="#00E5FF"
+        android:strokeLineCap="round"
+        android:strokeWidth="3.5" />
+
+    <!-- Lightning bolt -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M59,35 L45,55 H53 L48,73 L63,50 H55 Z"
+        android:strokeColor="#00E5FF"
+        android:strokeLineJoin="round"
+        android:strokeWidth="1" />
+
+    <!-- Ping trace: one spike, then flat -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M34,84 H44 L47,80 L51,87 L54,84 H74"
+        android:strokeColor="#FFB020"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.5" />
+</vector>

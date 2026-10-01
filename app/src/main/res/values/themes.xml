@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Theme.TurboBoost" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF07090C</item>
+    </style>
+</resources>

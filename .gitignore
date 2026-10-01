@@ -1,0 +1,36 @@
+*.iml
+.gradle
+/local.properties
+/.idea/workspace.xml
+/.idea/tasks.xml
+/.idea/assetWizardSettings.xml
+/.idea/modules.xml
+/.idea/navEditor.xml
+/.idea/caches
+/.idea/libraries
+/build
+-built
+capture/
+output.json
+.DS_Store
+*.jks
+*.keystore
+*.apk
+*.apks
+.cxx/
+/captures/
+.kotlin/
+
+release-key
+
+# Release hygiene (never commit)
+.idea/
+*.aab
+*.p12
+keystore.properties
+local.properties
+build/
+app/build/
+app/release/
+.claude/
+Claude outputs/
