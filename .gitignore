@@ -1,36 +1,56 @@
-*.iml
-.gradle
-/local.properties
-/.idea/workspace.xml
-/.idea/tasks.xml
-/.idea/assetWizardSettings.xml
-/.idea/modules.xml
-/.idea/navEditor.xml
-/.idea/caches
-/.idea/libraries
-/build
--built
-capture/
-output.json
-.DS_Store
-*.jks
-*.keystore
-*.apk
-*.apks
-.cxx/
-/captures/
-.kotlin/
-
-release-key
-
-# Release hygiene (never commit)
-.idea/
-*.aab
-*.p12
-keystore.properties
-local.properties
+# Android & Gradle Build Artifacts
+.gradle/
 build/
+*/build/
 app/build/
 app/release/
+-built/
+captures/
+/captures/
+capture/
+output.json
+.cxx/
+.kotlin/
+
+# Android Studio / IntelliJ IDEA
+*.iml
+.idea/
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/assetWizardSettings.xml
+.idea/modules.xml
+.idea/navEditor.xml
+.idea/caches/
+.idea/libraries/
+
+# Local & Environment Configuration
+local.properties
+/local.properties
+
+# Signing Keys, Keystores & Sensitive Credentials (NEVER COMMIT)
+*.jks
+*.keystore
+*.p12
+*.key
+keystore.properties
+gradle.properties
+/kkeeyy/
+release-key
+
+# Package Outputs
+*.apk
+*.apks
+*.aab
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Log files
+*.log
+
+# Workspace & Scratch Directories
 .claude/
 Claude outputs/
