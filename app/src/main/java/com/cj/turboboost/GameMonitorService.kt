@@ -19,6 +19,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -58,9 +61,12 @@ class GameMonitorService : Service() {
         /** Consecutive polls without Shizuku before giving up and leaving revert to app start. */
         const val MAX_UNAVAILABLE_POLLS = 6
 
-        @Volatile
-        var isRunning = false
-            private set
+        private val _running = MutableStateFlow(false)
+
+        /** Observable form of [isRunning], so an open screen can tell when a session ends. */
+        val running: StateFlow<Boolean> = _running.asStateFlow()
+
+        val isRunning: Boolean get() = _running.value
 
         fun start(context: Context, gamePackage: String, refreshRate: Float) {
             val store = Stores.tuner(context)
@@ -99,12 +105,13 @@ class GameMonitorService : Service() {
             ?: store.getString(KEY_RATE)?.toFloatOrNull()
         // Before any early exit: a startForegroundService() caller must see startForeground().
         goForeground(gamePackage)
-        if (gamePackage == null || rate == null || !PerformanceTuner.isActive(store)) {
+        val guarding = PerformanceTuner.isActive(store) || ResolutionLever.isPending(Stores.resolution(applicationContext))
+        if (gamePackage == null || rate == null || !guarding) {
             finish()
             return START_NOT_STICKY
         }
 
-        isRunning = true
+        _running.value = true
         job?.cancel()
         // A new boost replaces a session still running: keep what that one measured.
         saveSession()
@@ -126,7 +133,12 @@ class GameMonitorService : Service() {
                     unavailablePolls = 0
                     val now = SystemClock.elapsedRealtime()
                     val current = session ?: SessionAccumulator(gamePackage, rate, System.currentTimeMillis(), now)
-                        .also { session = it; lastSampleAt = now }
+                        .also {
+                            session = it
+                            lastSampleAt = now
+                            // Read once: the resolution is only ever changed before launch.
+                            it.renderResolution = DisplayResolution.summaryValue(ResolutionLever.read(RamCleaner.shell))
+                        }
                     if (now - lastSampleAt >= SAMPLE_MS) {
                         lastSampleAt = now
                         val sample = sampler.sample(current, now)
@@ -146,7 +158,9 @@ class GameMonitorService : Service() {
                         Log.d(TAG, "$gamePackage is gone - reverting gaming tweaks")
                         saveSession()
                         val report = PerformanceTuner.revertGamingTweaks(store)
-                        if (report.failed.isEmpty() && !report.unavailable) {
+                        // A no-op unless a render resolution override is pending.
+                        val resolution = ResolutionGuardService.restoreBlocking(applicationContext, onlyIfPending = true)
+                        if (report.failed.isEmpty() && !report.unavailable && resolution.ok) {
                             finish()
                             return
                         }
@@ -179,7 +193,7 @@ class GameMonitorService : Service() {
     }
 
     private fun finish() {
-        isRunning = false
+        _running.value = false
         val store = Stores.tuner(applicationContext)
         store.putString(KEY_PACKAGE, null)
         store.putString(KEY_RATE, null)
@@ -188,7 +202,7 @@ class GameMonitorService : Service() {
     }
 
     override fun onDestroy() {
-        isRunning = false
+        _running.value = false
         scope.cancel()
         // Stopped mid-session (manual Restore): the session still ended, so keep it.
         saveSession()

@@ -47,6 +47,9 @@ object Stores {
 
     /** Session diagnostics: the last 20 sessions. */
     fun sessions(context: Context) = SharedPrefsStore(context, "booster_sessions")
+
+    /** Render resolution override: the original state and the pending-restore flag. */
+    fun resolution(context: Context) = SharedPrefsStore(context, "booster_resolution")
 }
 
 /** Master auto-sync, behind an interface for the same reason as [KeyValueStore]. */
