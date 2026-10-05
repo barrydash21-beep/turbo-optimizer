@@ -114,8 +114,13 @@ object PerformanceTuner {
      *
      * The flag is cleared only when the refresh-rate restore landed, so a revert that could
      * not run (Shizuku down) is retried on the next app start.
+     *
+     * A no-op while `tweaks_active` is clear: nothing was captured, so the saved values read
+     * as unset and the keys would be deleted. Restore normal settings did exactly that with no
+     * session held, and HiOS then refilled peak_refresh_rate with 90 (seen on a Pova 7).
      */
     fun revertGamingTweaks(store: KeyValueStore): TuneReport {
+        if (!isActive(store)) return TuneReport()
         val shell = RamCleaner.shell
         if (!shell.isAvailable()) return TuneReport(unavailable = true)
 

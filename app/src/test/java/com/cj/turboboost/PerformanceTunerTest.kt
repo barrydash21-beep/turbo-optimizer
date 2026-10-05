@@ -231,6 +231,36 @@ class PerformanceTunerTest {
         assertTrue(PerformanceTuner.revertGamingTweaks(store).unavailable)
         assertTrue(PerformanceTuner.isActive(store))
     }
+
+    @Test
+    fun `revert with no session held touches nothing`() {
+        // Restore normal settings with no boost active used to delete both keys.
+        val shell = SettingsShell(mapOf("min_refresh_rate" to "10.0", "peak_refresh_rate" to "120.0"))
+        RamCleaner.shell = shell
+
+        val report = PerformanceTuner.revertGamingTweaks(FakeStore())
+
+        assertTrue(report.ok)
+        assertTrue(shell.commands.isEmpty())
+        assertEquals("10.0", shell.system["min_refresh_rate"])
+        assertEquals("120.0", shell.system["peak_refresh_rate"])
+    }
+
+    @Test
+    fun `a second revert after a clean one keeps the restored rate`() {
+        val shell = SettingsShell(mapOf("min_refresh_rate" to "10.0", "peak_refresh_rate" to "120.0"))
+        RamCleaner.shell = shell
+        val store = FakeStore()
+
+        PerformanceTuner.applyGamingTweaks(store, GameRegistry.profileFor("com.example.game"), 60f)
+        assertTrue(PerformanceTuner.revertGamingTweaks(store).ok)
+        val commandsAfterFirst = shell.commands.size
+        assertTrue(PerformanceTuner.revertGamingTweaks(store).ok)
+
+        assertEquals(commandsAfterFirst, shell.commands.size)
+        assertEquals("120.0", shell.system["peak_refresh_rate"])
+        assertFalse(shell.commands.any { it.startsWith("settings delete") })
+    }
 }
 
 class BackgroundKillTargetsTest {
