@@ -30,7 +30,12 @@ data class SessionRecord(
      * HiOS rewrites the key to its own setting ~3 s after a game launches, so this can differ
      * from [refreshRate]; the summary shows both.
      */
-    val observedPeak: Float? = null
+    val observedPeak: Float? = null,
+    /**
+     * Render resolution when the game was first seen: `900x2050@400` with an override,
+     * [DisplayResolution.NATIVE] without one, null if unreadable or recorded before this existed.
+     */
+    val renderResolution: String? = null
 ) {
     /** Average FPS is more than 15% below the chosen rate, or the device reached "moderate". */
     val struggled: Boolean
@@ -39,22 +44,25 @@ data class SessionRecord(
     fun encode(): String = listOf(
         packageName, RefreshRate.format(refreshRate), startedAtMs, durationMs,
         avgFps?.let { fmt(it) }, onePercentLowFps?.let { fmt(it) }, msToThermal1, maxThermal,
-        samples, fpsSamples, thermalSamples, observedPeak?.let { RefreshRate.format(it) }
+        samples, fpsSamples, thermalSamples, observedPeak?.let { RefreshRate.format(it) }, renderResolution
     ).joinToString(SEP) { it?.toString() ?: "" }
 
     companion object {
         private const val SEP = "|"
-        private const val FIELDS = 12
+        private const val FIELDS = 13
 
         /** Records saved before [observedPeak] existed. */
         private const val FIELDS_V1 = 11
+
+        /** Records saved before [renderResolution] existed. */
+        private const val FIELDS_V2 = 12
 
         private fun fmt(v: Float) = String.format(Locale.US, "%.2f", v)
 
         /** Null for a line that is not a complete record. */
         fun decode(line: String): SessionRecord? {
             val f = line.split(SEP)
-            if ((f.size != FIELDS && f.size != FIELDS_V1) || f[0].isBlank()) return null
+            if ((f.size != FIELDS && f.size != FIELDS_V2 && f.size != FIELDS_V1) || f[0].isBlank()) return null
             return runCatching {
                 SessionRecord(
                     packageName = f[0],
@@ -68,7 +76,8 @@ data class SessionRecord(
                     samples = f[8].toInt(),
                     fpsSamples = f[9].toInt(),
                     thermalSamples = f[10].toInt(),
-                    observedPeak = f.getOrNull(11)?.toFloatOrNull()
+                    observedPeak = f.getOrNull(11)?.toFloatOrNull(),
+                    renderResolution = f.getOrNull(12)?.takeIf { it.isNotBlank() }
                 )
             }.getOrNull()
         }
@@ -209,6 +218,9 @@ class SessionAccumulator(
     private var msToThermal1: Long? = null
     private var observedPeak: Float? = null
 
+    /** Set once by the monitor when the session starts; see [SessionRecord.renderResolution]. */
+    var renderResolution: String? = null
+
     /** The newest frame already counted, so the next latency dump is read from after it. */
     val lastPresent: Long get() = lastPresentNs
 
@@ -240,7 +252,8 @@ class SessionAccumulator(
         samples = samples,
         fpsSamples = fpsSamples,
         thermalSamples = thermalSamples,
-        observedPeak = observedPeak
+        observedPeak = observedPeak,
+        renderResolution = renderResolution
     )
 }
 
