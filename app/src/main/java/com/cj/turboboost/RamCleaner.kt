@@ -376,8 +376,17 @@ object RamCleaner {
      *
      * Snapshots the user's current settings first, so [restoreSystemState] has something
      * truthful to write back.
+     *
+     * [keepGameMode]: the game has a render resolution preset, which lives in GameManager's
+     * custom mode. Switching to the profile's mode would drop the downscale, so the mode is
+     * left alone.
      */
-    fun applyProfile(profile: BoostProfile, gamePackage: String, store: KeyValueStore): StepReport {
+    fun applyProfile(
+        profile: BoostProfile,
+        gamePackage: String,
+        store: KeyValueStore,
+        keepGameMode: Boolean = false
+    ): StepReport {
         if (!shell.isAvailable()) return StepReport(unavailable = true)
 
         beginSequence()
@@ -397,7 +406,7 @@ object RamCleaner {
         // After the force-stops, so the memory they released is reclaimable.
         if (profile.dropCaches) report.record("Kernel caches", dropKernelCaches())
 
-        report.record("Game mode", applyGameMode(profile.gameMode, gamePackage))
+        if (!keepGameMode) report.record("Game mode", applyGameMode(profile.gameMode, gamePackage))
 
         if (profile.suppressInterruptions) report.record("Do Not Disturb", suppressSystemInterruptions())
         if (profile.trimAnimations) report.record("Animations", optimizeTouchInput())
