@@ -3,6 +3,7 @@ package com.cj.turboboost
 import android.app.Application
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +42,14 @@ data class InstalledGame(
     val icon: ImageBitmap?,
     /** [GameProfile.allowedRefreshRates] filtered to the display's supported modes. */
     val supportedRates: List<Float>
+)
+
+/** A game card's render resolution: what the game holds now, plus this screen's transient state. */
+data class GameResolutionUi(
+    val status: GameResolutionStatus = GameResolutionStatus(),
+    val busy: Boolean = false,
+    /** Why the last change failed, until the next one. */
+    val note: String? = null
 )
 
 /** A launchable app offered in the "add a game" picker. */
@@ -84,9 +93,11 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     private val snapshot: KeyValueStore = Stores.snapshot(app)
     private val tunerStore: KeyValueStore = Stores.tuner(app)
     private val sessions = SessionStore(Stores.sessions(app))
-    private val resolutionStore: KeyValueStore = Stores.resolution(app)
+    private val optionsStore: KeyValueStore = Stores.options(app)
+    private val resolutionStore: KeyValueStore = Stores.gameResolution(app)
+    private val legacyResolutionStore: KeyValueStore = Stores.legacyResolution(app)
     private var staleRevertStarted = false
-    private var resolutionRecoveryStarted = false
+    private var overrideCheckStarted = false
 
     var step by mutableStateOf(BoostStep.IDLE)
         private set
@@ -123,27 +134,16 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     var summarySuggestion by mutableStateOf<Float?>(null)
         private set
 
-    /** Last `wm size` / `wm density` read, or null before the first successful read. */
-    var display by mutableStateOf<DisplayState?>(null)
+    /** Per-game downscale needs Android 14+; below that the feature is hidden. */
+    val resolutionSupported: Boolean = Build.VERSION.SDK_INT >= GameResolution.MIN_SDK
+
+    /** Render resolution state per game package, for its card. */
+    var gameResolution by mutableStateOf<Map<String, GameResolutionUi>>(emptyMap())
         private set
 
-    /** The last read failed (Shizuku was up but `wm` gave nothing parseable). */
-    var displayReadFailed by mutableStateOf(false)
+    /** A `wm size` / `wm density` override found by this build's one-time check, awaiting an answer. */
+    var displayOverride by mutableStateOf<DisplayState?>(null)
         private set
-
-    /** Percent of the preset picked on the resolution card; null means follow the current state. */
-    var resolutionPick by mutableStateOf<Int?>(null)
-        private set
-
-    var resolutionBusy by mutableStateOf(false)
-        private set
-
-    /** Why the last apply was blocked or failed, shown on the card until the next action. */
-    var resolutionNote by mutableStateOf<String?>(null)
-        private set
-
-    /** The note text when it is a "can't apply right now" block, so it can be re-checked. */
-    private var blockNote: String? = null
 
     /**
      * The package to launch once the boost finishes, held as state rather than sent as a
@@ -165,10 +165,6 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         // Fires once now and again whenever the monitor saves a session, so a summary shows
         // even if the booster is already open when the game exits.
         viewModelScope.launch { SessionStore.saved.collect { checkSummary() } }
-        // The guard can restore on its own (countdown expiry, notification action): re-read then.
-        viewModelScope.launch { ResolutionGuardService.state.collect { refreshResolution() } }
-        // A session ending while the screen is open clears a "session in progress" note.
-        viewModelScope.launch { GameMonitorService.running.collect { if (!it) recheckResolutionBlock() } }
     }
 
     // -----------------------------------------------------------------------
@@ -187,6 +183,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
             }.toMap()
             // A selection whose game has since been uninstalled is no selection at all.
             if (found.none { it.profile.packageName == selectedGame }) selectedGame = null
+            refreshGameResolution()
         }
     }
 
@@ -276,8 +273,6 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     fun selectGame(packageName: String) {
         selectedGame = packageName
         prefs.selectedGame = packageName
-        // A note about the previously selected game running no longer applies.
-        recheckResolutionBlock()
     }
 
     /** Picking a rate on a card also picks that card's game. */
@@ -361,9 +356,10 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshShizuku() {
         viewModelScope.launch {
+            val was = shizukuState
             shizukuState = probeShizuku()
-            // Shizuku arriving late leaves the resolution card with nothing read yet.
-            if (shizukuState == ShizukuState.READY && display == null) refreshResolution()
+            // Shizuku arriving late leaves the resolution rows with nothing read yet.
+            if (shizukuState == ShizukuState.READY && was != ShizukuState.READY) refreshGameResolution()
         }
     }
 
@@ -480,10 +476,21 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                 val active = profile
 
                 if (shizukuState == ShizukuState.READY) {
+                    // A phone restart puts the game back in standard mode; set its preset again first.
+                    val reapplied = if (resolutionSupported) {
+                        withContext(Dispatchers.IO) {
+                            GameResolution.reapplyBeforeLaunch(RamCleaner.shell, resolutionStore, gamePackage)
+                        }
+                    } else {
+                        null
+                    }
+                    reapplied?.let { _events.send(BoostEvent.ShowToast(it.detail)) }
                     val outcome = withTimeoutOrNull(BOOST_TIMEOUT_MS) {
                         withContext(Dispatchers.IO) {
-                            // (a) + the profile's extras; the kill runs first inside it.
-                            val report = RamCleaner.applyProfile(active, gamePackage, snapshot)
+                            // (a) + the profile's extras; the kill runs first inside it. A render
+                            // resolution preset lives in the game's custom mode: keep that mode.
+                            val keepMode = GameResolution.applied(resolutionStore, gamePackage) != null
+                            val report = RamCleaner.applyProfile(active, gamePackage, snapshot, keepGameMode = keepMode)
                             // (b) The per-game rate and power mode. Saves the originals itself.
                             report to PerformanceTuner.applyGamingTweaks(tunerStore, game, rate)
                         }
@@ -504,8 +511,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     }
 
                     // (c) Whatever happened above, if tweaks are on something must undo them.
-                    // A pending resolution override is also undone by the monitor on game exit.
-                    if (PerformanceTuner.isActive(tunerStore) || ResolutionLever.isPending(resolutionStore)) {
+                    if (PerformanceTuner.isActive(tunerStore)) {
                         try {
                             GameMonitorService.start(app, gamePackage, rate)
                         } catch (e: Exception) {
@@ -597,202 +603,161 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // -----------------------------------------------------------------------
-    // Render resolution
+    // Render resolution: per-game downscale through GameManager
     // -----------------------------------------------------------------------
 
-    /** Re-reads `wm size` / `wm density`. Keeps the last good read when Shizuku is down. */
-    fun refreshResolution() {
-        viewModelScope.launch {
-            val shell = RamCleaner.shell
-            val state = withContext(Dispatchers.IO) {
-                if (shell.isAvailable()) ResolutionLever.read(shell) to true else null to false
-            }
-            if (!state.second) return@launch
-            displayReadFailed = state.first == null
-            if (state.first != null) display = state.first
-        }
-        // Called on every resume: the game may have been closed while the user was away.
-        recheckResolutionBlock()
-    }
-
-    fun pickResolution(percent: Int) {
-        resolutionPick = percent
-        resolutionNote = null
-    }
-
     /**
-     * Applies the picked preset before launch. Blocked while the selected game (or any monitored
-     * session) is running: a running game would be resized under it.
+     * Re-reads every game's downscale state, files any finished measurement, and arms a
+     * measurement watcher for each game whose card still lacks one. Keeps the last good
+     * state when Shizuku is down.
      */
-    fun applyResolution() {
-        if (step != BoostStep.IDLE || resolutionBusy) return
-        val state = display ?: return
-        val preset = DisplayResolution.presets(state).firstOrNull { !it.native && it.percent == resolutionPick } ?: return
-        val app = getApplication<Application>()
-        resolutionBusy = true
-        resolutionNote = null
+    fun refreshGameResolution() {
+        if (!resolutionSupported) return
+        val packages = games?.map { it.profile.packageName } ?: return
         viewModelScope.launch {
-            try {
-                shizukuState = probeShizuku()
-                if (shizukuState != ShizukuState.READY) {
-                    resolutionNote = "Shizuku is not ready - resolution unchanged"
-                    return@launch
-                }
-                val blocked = resolutionBlockReason()
-                if (blocked != null) {
-                    resolutionNote = blocked
-                    blockNote = blocked
-                    _events.send(BoostEvent.ShowToast(blocked))
-                    return@launch
-                }
-
-                val result = withContext(Dispatchers.IO) {
-                    ResolutionLever.apply(RamCleaner.shell, resolutionStore, preset.target)
-                }
-                result.state?.let { display = it }
-                if (!result.ok) {
-                    resolutionNote = result.detail
-                    _events.send(BoostEvent.ShowToast(result.detail))
-                    return@launch
-                }
-                try {
-                    // The deadline that still fires if HiOS freezes this app once it is backgrounded.
-                    val watchdog = withContext(Dispatchers.IO) {
-                        ResolutionLever.startWatchdog(
-                            RamCleaner.shell,
-                            resolutionStore,
-                            (ResolutionGuardService.CONFIRM_MS / 1000).toInt()
-                        )
+            val found = withContext(Dispatchers.IO) {
+                val shell = RamCleaner.shell
+                if (!shell.isAvailable()) return@withContext null
+                packages.associateWith { pkg ->
+                    GameResolution.status(shell, resolutionStore, pkg).also { status ->
+                        if (status.unavailableReason == null && GameResolution.needsMeasurement(resolutionStore, pkg)) {
+                            GameResolution.startWatcher(
+                                shell,
+                                pkg,
+                                GameResolution.applied(resolutionStore, pkg),
+                                GameResolution.stalePid(resolutionStore, pkg)
+                            )
+                        }
                     }
-                    check(watchdog) { "shell watchdog did not start" }
-                    ResolutionGuardService.arm(app)
-                } catch (e: Exception) {
-                    // No countdown means no safety net: do not leave the override on.
-                    Log.w(TAG, "Resolution guard could not start", e)
-                    val undo = withContext(Dispatchers.IO) { ResolutionGuardService.restoreBlocking(app, onlyIfPending = true) }
-                    undo.state?.let { display = it }
-                    resolutionNote = "Safety countdown could not start - ${if (undo.ok) "restored" else undo.detail}"
-                    _events.send(BoostEvent.ShowToast(resolutionNote!!))
                 }
-            } finally {
-                resolutionBusy = false
+            } ?: return@launch
+            gameResolution = found.mapValues { (pkg, status) ->
+                (gameResolution[pkg] ?: GameResolutionUi()).copy(status = status)
             }
         }
     }
 
-    /**
-     * Why an apply must wait, or null when it may go ahead. pidof exits 0 when running and 1
-     * when not; anything else is a check that failed, and a failed check blocks rather than
-     * risk resizing a running game.
-     */
-    private suspend fun resolutionBlockReason(): String? {
-        if (GameMonitorService.isRunning) {
-            return "A game session is in progress. The resolution is only changed before launch."
-        }
-        val pkg = selectedGame?.takeIf { GameRegistry.isValidPackageName(it) } ?: return null
-        val pid = withContext(Dispatchers.IO) { RamCleaner.shell.run("pidof $pkg") }
-        return when {
-            pid.ok -> "${gameName(pkg)} is running. Close it first: the resolution is only changed before launch."
-            pid.exitCode != 1 || pid.timedOut || pid.unavailable || pid.apiUnsupported ->
-                "Could not check whether ${gameName(pkg)} is running - resolution unchanged"
-            else -> null
+    /** A preset picked on [packageName]'s card; null is the game's own default (a restore). */
+    fun pickResolution(packageName: String, level: ResolutionLevel?) {
+        val current = gameResolution[packageName] ?: GameResolutionUi()
+        if (level == current.status.level && current.status.changedOutside == null) return
+        changeResolution(packageName) { shell, running ->
+            if (level == null) {
+                GameResolution.restore(shell, resolutionStore, packageName, force = false, runningPid = running)
+            } else {
+                GameResolution.apply(shell, resolutionStore, packageName, level, running)
+            }
         }
     }
 
-    /**
-     * A "blocked" note describes a moment, not a state: once the session ends or the game
-     * closes it is wrong. Re-runs the same check and drops the note when it no longer holds.
-     * Error notes from an apply or restore are left alone.
-     */
-    private fun recheckResolutionBlock() {
-        val shown = resolutionNote ?: return
-        if (shown != blockNote) return
-        viewModelScope.launch {
-            // Without Shizuku the check cannot run; the card shows that reason instead anyway.
-            if (!withContext(Dispatchers.IO) { RamCleaner.shell.isAvailable() }) return@launch
-            val still = resolutionBlockReason()
-            if (resolutionNote != shown) return@launch // replaced while the check ran
-            resolutionNote = still
-            blockNote = still
+    /** The user confirmed restoring over a mode that was changed outside this app. */
+    fun restoreResolutionAnyway(packageName: String) =
+        changeResolution(packageName) { shell, running ->
+            GameResolution.restore(shell, resolutionStore, packageName, force = true, runningPid = running)
         }
-    }
-
-    /** "Keep this resolution?" answered yes. */
-    fun keepResolution() {
-        ResolutionGuardService.keep(getApplication())
-    }
 
     /**
-     * Restore default. With an override this app applied, puts the recorded original back;
-     * with one it did not apply, resets both axes. Pending is read here, before the IO hop, so
-     * a guard restore landing first turns this into a no-op instead of a reset of the original.
+     * Runs one apply or restore. A game that is running keeps its old setting until it
+     * restarts; the card says so and offers a restart, which only the user can start.
      */
-    fun restoreResolution() {
-        if (resolutionBusy) return
-        val app = getApplication<Application>()
-        val pending = ResolutionLever.isPending(resolutionStore)
-        resolutionBusy = true
-        resolutionNote = null
+    private fun changeResolution(packageName: String, change: (ShellExecutor, String?) -> GameResolutionResult) {
+        if (step != BoostStep.IDLE || gameResolution[packageName]?.busy == true) return
+        if (!GameRegistry.isValidPackageName(packageName)) return
+        updateResolution(packageName) { it.copy(busy = true, note = null) }
         viewModelScope.launch {
             try {
                 val result = withContext(Dispatchers.IO) {
-                    ResolutionGuardService.restoreBlocking(app, onlyIfPending = pending)
+                    val shell = RamCleaner.shell
+                    if (!shell.isAvailable()) {
+                        GameResolutionResult(false, "Shizuku not connected - nothing changed", unavailable = true)
+                    } else {
+                        change(shell, GameResolution.pidOf(shell, packageName))
+                    }
                 }
-                result.state?.let { display = it }
-                if (!result.ok) resolutionNote = result.detail
-                _events.send(BoostEvent.ShowToast(if (result.ok) "Display back to default" else result.detail))
-                refreshResolution()
+                if (!result.ok) {
+                    updateResolution(packageName) { it.copy(note = result.detail) }
+                    if (!result.changedOutside) _events.send(BoostEvent.ShowToast(result.detail))
+                }
             } finally {
-                resolutionBusy = false
+                updateResolution(packageName) { it.copy(busy = false) }
+                refreshGameResolution()
             }
         }
     }
 
+    /** "Restart now", after the user confirmed it closes the game: force-stop, then relaunch. */
+    fun restartGame(packageName: String) {
+        if (step != BoostStep.IDLE || !GameRegistry.isValidPackageName(packageName)) return
+        viewModelScope.launch {
+            val stopped = withContext(Dispatchers.IO) { RamCleaner.shell.run("am force-stop $packageName").ok }
+            if (!stopped) {
+                _events.send(BoostEvent.ShowToast("Could not close ${gameName(packageName)} - nothing changed"))
+                return@launch
+            }
+            val reapplied = withContext(Dispatchers.IO) {
+                GameResolution.reapplyBeforeLaunch(RamCleaner.shell, resolutionStore, packageName)
+            }
+            reapplied?.let { _events.send(BoostEvent.ShowToast(it.detail)) }
+            // Clears the pending note and arms the measurement for the new process.
+            refreshGameResolution()
+            pendingLaunch = packageName
+        }
+    }
+
+    private fun updateResolution(packageName: String, change: (GameResolutionUi) -> GameResolutionUi) {
+        gameResolution = gameResolution + (packageName to change(gameResolution[packageName] ?: GameResolutionUi()))
+    }
+
     /**
-     * On app start, undo an override that should not be there: one a dead process left pending
-     * (crash, force-close, reboot), one that no longer matches what this app applied, or, with
-     * this app's records gone, one that is exactly this app's own preset. An override from
-     * anywhere else is the user's and is left alone; the card still offers Restore default.
+     * This build's one-time check for a `wm size` / `wm density` override, which earlier
+     * builds set and silently undid. Nothing is changed here: an override found is put to the
+     * user, and only [resetDisplayOverride] touches the display. Waits for Shizuku to bind.
      */
-    fun recoverResolution() {
-        if (resolutionRecoveryStarted) return
-        resolutionRecoveryStarted = true
-        val app = getApplication<Application>()
+    fun checkDisplayOverride() {
+        if (overrideCheckStarted) return
+        overrideCheckStarted = true
         viewModelScope.launch {
             repeat(STALE_REVERT_ATTEMPTS) {
                 val outcome = withContext(Dispatchers.IO) {
                     val shell = RamCleaner.shell
-                    if (!shell.isAvailable()) return@withContext null
-                    val state = ResolutionLever.read(shell) ?: return@withContext null
-                    val pending = ResolutionLever.isPending(resolutionStore)
-                    val intended = ResolutionLever.intended(resolutionStore)
-                    val stale = when {
-                        pending && !ResolutionLever.appliedInThisProcess -> true
-                        pending -> intended == null || !DisplayResolution.matches(state, intended)
-                        else -> DisplayResolution.isOwnPreset(state)
+                    when {
+                        DisplayOverride.isChecked(optionsStore) -> true to null
+                        !shell.isAvailable() -> false to null
+                        else -> DisplayOverride.check(shell, optionsStore, legacyResolutionStore).let { found ->
+                            (found != null || DisplayOverride.isChecked(optionsStore)) to found
+                        }
                     }
-                    if (!stale) return@withContext state to null
-                    Log.w(TAG, "Unintended resolution override $state (pending=$pending) - restoring")
-                    state to ResolutionGuardService.restoreBlocking(app, onlyIfPending = pending)
                 }
-                if (outcome == null) {
-                    delay(2000)
-                    return@repeat
+                if (outcome.first) {
+                    displayOverride = outcome.second
+                    return@launch
                 }
-                val (state, restore) = outcome
-                display = restore?.state ?: state
-                displayReadFailed = false
-                if (restore != null) {
-                    if (!restore.ok) resolutionNote = restore.detail
-                    _events.send(
-                        BoostEvent.ShowToast(
-                            if (restore.ok) "Restored the default display resolution" else restore.detail
-                        )
-                    )
-                }
-                return@launch
+                delay(2000)
             }
         }
+    }
+
+    /** "Reset" on the override prompt. */
+    fun resetDisplayOverride() {
+        viewModelScope.launch {
+            val after = withContext(Dispatchers.IO) {
+                if (RamCleaner.shell.isAvailable()) DisplayOverride.reset(RamCleaner.shell) else null
+            }
+            if (after != null && !after.hasOverride) {
+                DisplayOverride.markChecked(optionsStore)
+                displayOverride = null
+                _events.send(BoostEvent.ShowToast("Display back to device default"))
+            } else {
+                val why = after?.let { "display still reports ${it.size} @ ${it.density} dpi" } ?: "Shizuku not connected"
+                _events.send(BoostEvent.ShowToast("Reset not confirmed: $why"))
+            }
+        }
+    }
+
+    /** "Keep" on the override prompt: never asked again by this build. */
+    fun keepDisplayOverride() {
+        DisplayOverride.markChecked(optionsStore)
+        displayOverride = null
     }
 
     // -----------------------------------------------------------------------
@@ -810,6 +775,9 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * The single "return to normal" action: drops the VPN and reverts every system change
      * the booster made. Always reachable from the UI, since those changes outlive the VPN.
+     *
+     * Per-game render resolution presets are left alone: like the per-game refresh rate they
+     * are the user's saved choice for that game, undone with DEFAULT on its card.
      */
     fun restoreEverything() {
         stopVpn()
@@ -821,13 +789,9 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     val system = RamCleaner.restoreSystemState(snapshot)
                     // Refresh rate and fixed performance mode: the user's exact saved values.
                     val tune = PerformanceTuner.revertGamingTweaks(tunerStore)
-                    // Render resolution: only an override this app applied.
-                    val resolution = ResolutionGuardService.restoreBlocking(app, onlyIfPending = true)
-                    val failed = tune.failed + if (resolution.ok) emptyList() else listOf("Resolution")
-                    if (failed.isEmpty()) system else system.copy(failed = system.failed + failed)
+                    if (tune.failed.isEmpty()) system else system.copy(failed = system.failed + tune.failed)
                 }
             }
-            refreshResolution()
             _events.send(
                 BoostEvent.ShowToast(report?.summary("System restored") ?: "Restore timed out - try again")
             )
