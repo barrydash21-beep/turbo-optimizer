@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-07
+
+### Changed
+- Render resolution is now set per game, on the game's card: DEFAULT, MEDIUM or LOW. It uses Android's game mode downscaling (Android 14 and later), so only the game renders smaller. The screen, system UI and gestures are no longer touched. Hidden on older Android versions.
+- After the game's next launch the card shows what it actually renders at, compared with its own default ("Renders at 648x1472 (−19% pixels)"), or says the preset had no effect because the game already renders below it.
+- A change made while the game is running applies the next time it opens. The card offers Restart now, which asks first because it closes the game.
+- DEFAULT puts back the game mode and settings the game had before. If they were changed outside the app since, it says so and only overwrites them if you confirm.
+- After the phone restarts, Android puts every game back in its default mode, which switches a preset off. Turbo sets it again when it launches the game (BOOST or Restart now), and the card says so in the meantime.
+- A boost no longer switches the game mode of a game that has a resolution preset, which would have cancelled the preset.
+
+### Removed
+- The display-wide resolution presets (83% and 67%, using `wm size` and `wm density`), the 15-second "Keep this resolution?" check and its notification. On some phones (seen on HiOS 16) any screen size override broke swipe-up to Recents in portrait and scaled system UI unevenly.
+- The app no longer undoes display overrides by itself on start. If one is active the first time this version opens, it asks once whether to reset it to the device default.
+
 ## [1.1.0] - 2026-10-05
 
 ### Added
