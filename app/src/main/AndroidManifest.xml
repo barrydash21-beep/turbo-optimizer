@@ -122,19 +122,5 @@
                 android:value="Polls whether the user-launched game is still running so display tweaks can be reverted when it exits, and samples its frame rate and thermal status for the session summary" />
         </service>
 
-        <!--
-            Guards a user-applied render resolution override: runs the 15 s keep-or-revert
-            countdown with the app backgrounded and keeps a Restore default action in the
-            notification while the override is active. specialUse as above.
-        -->
-        <service
-            android:name=".ResolutionGuardService"
-            android:foregroundServiceType="specialUse"
-            android:exported="false">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Reverts a user-applied display resolution change if the user does not confirm it within 15 seconds, and offers a one-tap restore while it is active" />
-        </service>
-
     </application>
 </manifest>

@@ -105,8 +105,7 @@ class GameMonitorService : Service() {
             ?: store.getString(KEY_RATE)?.toFloatOrNull()
         // Before any early exit: a startForegroundService() caller must see startForeground().
         goForeground(gamePackage)
-        val guarding = PerformanceTuner.isActive(store) || ResolutionLever.isPending(Stores.resolution(applicationContext))
-        if (gamePackage == null || rate == null || !guarding) {
+        if (gamePackage == null || rate == null || !PerformanceTuner.isActive(store)) {
             finish()
             return START_NOT_STICKY
         }
@@ -136,8 +135,8 @@ class GameMonitorService : Service() {
                         .also {
                             session = it
                             lastSampleAt = now
-                            // Read once: the resolution is only ever changed before launch.
-                            it.renderResolution = DisplayResolution.summaryValue(ResolutionLever.read(RamCleaner.shell))
+                            // Read once: a preset change reaches the game only at its next launch.
+                            it.renderResolution = GameResolution.sessionValue(Stores.gameResolution(applicationContext), gamePackage)
                         }
                     if (now - lastSampleAt >= SAMPLE_MS) {
                         lastSampleAt = now
@@ -158,9 +157,7 @@ class GameMonitorService : Service() {
                         Log.d(TAG, "$gamePackage is gone - reverting gaming tweaks")
                         saveSession()
                         val report = PerformanceTuner.revertGamingTweaks(store)
-                        // A no-op unless a render resolution override is pending.
-                        val resolution = ResolutionGuardService.restoreBlocking(applicationContext, onlyIfPending = true)
-                        if (report.failed.isEmpty() && !report.unavailable && resolution.ok) {
+                        if (report.failed.isEmpty() && !report.unavailable) {
                             finish()
                             return
                         }

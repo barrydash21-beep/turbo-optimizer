@@ -48,8 +48,11 @@ object Stores {
     /** Session diagnostics: the last 20 sessions. */
     fun sessions(context: Context) = SharedPrefsStore(context, "booster_sessions")
 
-    /** Render resolution override: the original state and the pending-restore flag. */
-    fun resolution(context: Context) = SharedPrefsStore(context, "booster_resolution")
+    /** Per-game downscale: each game's snapshot, the preset applied, and its measurements. */
+    fun gameResolution(context: Context) = SharedPrefsStore(context, "booster_game_resolution")
+
+    /** The removed `wm size` lever's records; cleared by the one-time display override check. */
+    fun legacyResolution(context: Context) = SharedPrefsStore(context, "booster_resolution")
 }
 
 /** Master auto-sync, behind an interface for the same reason as [KeyValueStore]. */

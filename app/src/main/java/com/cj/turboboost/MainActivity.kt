@@ -25,7 +25,6 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.withResumed
 import com.cj.turboboost.ui.BoosterScreen
-import com.cj.turboboost.ui.ResolutionPanel
 import com.cj.turboboost.ui.TurboTheme
 import kotlinx.coroutines.launch
 import rikka.shizuku.Shizuku
@@ -40,9 +39,6 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val TAG = "TurboBooster"
         const val REQUEST_SHIZUKU = 0
-        const val KEY_AFTER_NOTIFICATIONS = "after_notifications"
-        const val AFTER_BOOST = "boost"
-        const val AFTER_APPLY_RESOLUTION = "apply_resolution"
     }
 
     private val viewModel: BoostViewModel by viewModels()
@@ -86,18 +82,11 @@ class MainActivity : ComponentActivity() {
                 notificationDenialShown = true
                 toast("Notifications off - the game monitor runs without showing its notification")
             }
-            if (afterNotifications == AFTER_APPLY_RESOLUTION) viewModel.applyResolution() else viewModel.onBoostRequested()
-            afterNotifications = AFTER_BOOST
+            viewModel.onBoostRequested()
         }
 
     /** Once per launch: after two denials Android answers instantly, which would toast every boost. */
     private var notificationDenialShown = false
-
-    /**
-     * What the notification permission request was for. A name rather than a lambda, saved in
-     * the instance state, so a recreation while the dialog is up still runs the right thing.
-     */
-    private var afterNotifications = AFTER_BOOST
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -107,7 +96,6 @@ class MainActivity : ComponentActivity() {
         )
 
         Log.d(TAG, "MainActivity onCreate")
-        afterNotifications = savedInstanceState?.getString(KEY_AFTER_NOTIFICATIONS) ?: AFTER_BOOST
 
         // Phase 2: Safety Checks - Add listeners to safely monitor connection state
         Shizuku.addBinderReceivedListenerSticky(binderReceived)
@@ -117,7 +105,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             TurboTheme {
                 val vpnState by NetworkBlockerVpnService.state.collectAsState()
-                val resolutionGuard by ResolutionGuardService.state.collectAsState()
 
                 // Held as ViewModel state, so a boost that finishes while the Activity is
                 // being recreated still launches the game (H3).
@@ -155,18 +142,14 @@ class MainActivity : ComponentActivity() {
                     onRemoveGame = { viewModel.removeGame(it) },
                     onDismissSummary = { viewModel.dismissSummary() },
                     onApplySuggestion = { viewModel.applySuggestion() },
-                    resolution = ResolutionPanel(
-                        display = viewModel.display,
-                        readFailed = viewModel.displayReadFailed,
-                        pick = viewModel.resolutionPick,
-                        busy = viewModel.resolutionBusy,
-                        note = viewModel.resolutionNote,
-                        guard = resolutionGuard
-                    ),
-                    onPickResolution = { viewModel.pickResolution(it) },
-                    onApplyResolution = ::requestNotificationsThenApplyResolution,
-                    onKeepResolution = { viewModel.keepResolution() },
-                    onRestoreResolution = { viewModel.restoreResolution() }
+                    resolutionSupported = viewModel.resolutionSupported,
+                    gameResolution = viewModel.gameResolution,
+                    onPickResolution = { pkg, level -> viewModel.pickResolution(pkg, level) },
+                    onRestoreResolutionAnyway = { viewModel.restoreResolutionAnyway(it) },
+                    onRestartGame = { viewModel.restartGame(it) },
+                    displayOverride = viewModel.displayOverride,
+                    onResetDisplayOverride = { viewModel.resetDisplayOverride() },
+                    onKeepDisplayOverride = { viewModel.keepDisplayOverride() }
                 )
             }
         }
@@ -181,7 +164,7 @@ class MainActivity : ComponentActivity() {
 
         viewModel.startShizukuDetection()
         viewModel.revertStaleTweaks()
-        viewModel.recoverResolution()
+        viewModel.checkDisplayOverride()
     }
 
     override fun onResume() {
@@ -190,12 +173,6 @@ class MainActivity : ComponentActivity() {
         // A game may have been installed or removed, or a session may have ended, while away.
         viewModel.refreshGames()
         viewModel.checkSummary()
-        viewModel.refreshResolution()
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        outState.putString(KEY_AFTER_NOTIFICATIONS, afterNotifications)
     }
 
     override fun onDestroy() {
@@ -258,22 +235,14 @@ class MainActivity : ComponentActivity() {
         startActivity(launch)
     }
 
-    private fun requestNotificationsThenBoost() =
-        requestNotificationsThen(AFTER_BOOST) { viewModel.onBoostRequested() }
-
-    /** The resolution guard's notification carries the Restore default action, so ask first. */
-    private fun requestNotificationsThenApplyResolution() =
-        requestNotificationsThen(AFTER_APPLY_RESOLUTION) { viewModel.applyResolution() }
-
-    private fun requestNotificationsThen(after: String, action: () -> Unit) {
+    private fun requestNotificationsThenBoost() {
         val needed = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         if (needed) {
-            afterNotifications = after
             notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            action()
+            viewModel.onBoostRequested()
         }
     }
 

@@ -32,8 +32,9 @@ data class SessionRecord(
      */
     val observedPeak: Float? = null,
     /**
-     * Render resolution when the game was first seen: `900x2050@400` with an override,
-     * [DisplayResolution.NATIVE] without one, null if unreadable or recorded before this existed.
+     * Render resolution preset when the game was first seen: `LOW 0.6` or `default`
+     * ([GameResolution.sessionValue]). Older records hold the removed display override,
+     * `900x2050@400` or `native`. Null if recorded before this existed.
      */
     val renderResolution: String? = null
 ) {

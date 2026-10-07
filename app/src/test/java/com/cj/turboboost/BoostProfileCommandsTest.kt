@@ -95,6 +95,20 @@ class BoostProfileCommandsTest {
         assertFalse(shell.ran("cmd game mode performance com.example.game"))
     }
 
+    @Test
+    fun `a game with a render resolution preset keeps its custom mode through a boost`() {
+        val shell = FakeShell()
+        RamCleaner.shell = shell
+        RamCleaner.syncSettings = FakeSyncSettings()
+
+        val report = RamCleaner.applyProfile(BoostProfile.PERFORMANCE, game, FakeStore(), keepGameMode = true)
+
+        assertFalse(shell.ran("cmd game mode"))
+        assertFalse(report.failed.contains("Game mode"))
+        // The rest of the profile still runs.
+        assertTrue(shell.commands.contains("cmd notification set_dnd priority"))
+    }
+
     // -----------------------------------------------------------------------
     // T1: no user-controlled data reaches the shell
     // -----------------------------------------------------------------------

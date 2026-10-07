@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -45,17 +46,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
-import android.os.SystemClock
 import com.cj.turboboost.BoostProfile
-import com.cj.turboboost.DisplayResolution
 import com.cj.turboboost.DisplayState
 import com.cj.turboboost.GameRegistry
+import com.cj.turboboost.GameResolutionUi
 import com.cj.turboboost.InstalledGame
 import com.cj.turboboost.LaunchableApp
 import com.cj.turboboost.RamInfo
 import com.cj.turboboost.RefreshRate
-import com.cj.turboboost.ResolutionGuardState
-import com.cj.turboboost.ResolutionTarget
+import com.cj.turboboost.ResolutionLevel
 import com.cj.turboboost.SessionRecord
 import com.cj.turboboost.SystemTelemetry
 import com.cj.turboboost.VpnState
@@ -74,21 +73,6 @@ enum class BoostStep(val label: String) {
     STABILIZING("LOCKING PING"),
     LAUNCHING("LAUNCHING")
 }
-
-/** Everything the render resolution card shows. */
-data class ResolutionPanel(
-    /** Last `wm` read, or null before the first one succeeded. */
-    val display: DisplayState?,
-    val readFailed: Boolean,
-    /** Picked preset percent; null follows the current state. */
-    val pick: Int?,
-    val busy: Boolean,
-    val note: String?,
-    val guard: ResolutionGuardState
-)
-
-/** The recovery line shown whenever an override is active. */
-private const val ADB_FALLBACK = "If the screen looks wrong: adb shell wm size reset && adb shell wm density reset"
 
 // ---------------------------------------------------------------------------
 // Principal Palette & Theme
@@ -157,16 +141,21 @@ fun BoosterScreen(
     onRemoveGame: (String) -> Unit,
     onDismissSummary: () -> Unit,
     onApplySuggestion: () -> Unit,
-    resolution: ResolutionPanel,
-    onPickResolution: (Int) -> Unit,
-    onApplyResolution: () -> Unit,
-    onKeepResolution: () -> Unit,
-    onRestoreResolution: () -> Unit
+    resolutionSupported: Boolean,
+    gameResolution: Map<String, GameResolutionUi>,
+    onPickResolution: (String, ResolutionLevel?) -> Unit,
+    onRestoreResolutionAnyway: (String) -> Unit,
+    onRestartGame: (String) -> Unit,
+    displayOverride: DisplayState?,
+    onResetDisplayOverride: () -> Unit,
+    onKeepDisplayOverride: () -> Unit
 ) {
     val context = LocalContext.current
     val busy = step != BoostStep.IDLE
     val accent = if (shizuku == ShizukuState.READY) Tac.Cyan else Tac.Amber
     val selected = games?.firstOrNull { it.profile.packageName == selectedGame }
+    /** The game whose "Restart now" is waiting for confirmation. */
+    var restartTarget by rememberSaveable { mutableStateOf<String?>(null) }
 
     // Polling is scoped to STARTED so neither the 3 s memory read nor the 2 s network probe
     // keeps waking the radio while the user is in the game (L3/L4).
@@ -248,7 +237,12 @@ fun BoosterScreen(
                 onSelectGame = onSelectGame,
                 onRateChange = onRateChange,
                 onAddGame = onOpenPicker,
-                onRemoveGame = onRemoveGame
+                onRemoveGame = onRemoveGame,
+                resolution = if (resolutionSupported) gameResolution else null,
+                shizukuReady = shizuku == ShizukuState.READY,
+                onPickResolution = onPickResolution,
+                onRestoreResolutionAnyway = onRestoreResolutionAnyway,
+                onRestartGame = { restartTarget = it }
             )
 
             Spacer(Modifier.height(20.dp))
@@ -272,17 +266,6 @@ fun BoosterScreen(
                 enabled = !busy,
                 onProfileChange = onProfileChange,
                 onVpnEnabledChange = onVpnEnabledChange
-            )
-
-            Spacer(Modifier.height(14.dp))
-
-            ResolutionModule(
-                panel = resolution,
-                shizuku = shizuku,
-                enabled = !busy,
-                onPick = onPickResolution,
-                onApply = onApplyResolution,
-                onRestore = onRestoreResolution
             )
 
             Spacer(Modifier.height(14.dp))
@@ -327,156 +310,132 @@ fun BoosterScreen(
             )
         }
 
-        val countdown = resolution.guard
-        if (countdown.target != null && countdown.deadline != null) {
-            KeepResolutionDialog(
-                target = countdown.target,
-                deadline = countdown.deadline,
-                busy = resolution.busy,
-                onKeep = onKeepResolution,
-                onRestore = onRestoreResolution
+        restartTarget?.let { pkg ->
+            val label = games?.firstOrNull { it.profile.packageName == pkg }?.label ?: pkg
+            RestartGameDialog(
+                gameLabel = label,
+                onConfirm = {
+                    restartTarget = null
+                    onRestartGame(pkg)
+                },
+                onDismiss = { restartTarget = null }
             )
+        }
+
+        if (displayOverride != null) {
+            DisplayOverrideDialog(state = displayOverride, onReset = onResetDisplayOverride, onKeep = onKeepDisplayOverride)
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Render resolution: wm size + wm density through Shizuku, applied before launch
+// Render resolution: per-game downscale through GameManager, shown on each game card
 // ---------------------------------------------------------------------------
+
+/**
+ * A game card's render resolution row: DEFAULT plus the presets, the measured result, and
+ * anything that still needs the user (a restart, or a mode changed outside this app).
+ */
+@Composable
+private fun GameResolutionRow(
+    gameLabel: String,
+    ui: GameResolutionUi?,
+    shizukuReady: Boolean,
+    enabled: Boolean,
+    onPick: (ResolutionLevel?) -> Unit,
+    onRestoreAnyway: () -> Unit,
+    onRestart: () -> Unit
+) {
+    val status = ui?.status
+    // No silent failure: every reason the row is off is spelled out.
+    val reason = when {
+        !shizukuReady -> "Needs Shizuku to read and change the game's mode."
+        status == null -> "Reading the game's mode..."
+        else -> status.unavailableReason
+    }
+    val usable = enabled && reason == null && ui?.busy != true
+
+    Text("RENDER RESOLUTION", color = Tac.TextLo, fontSize = 10.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Black)
+    Spacer(Modifier.height(8.dp))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        val options = listOf<Pair<String, ResolutionLevel?>>("DEFAULT" to null) + ResolutionLevel.entries.map { it.label to it }
+        options.forEach { (label, level) ->
+            ResolutionChip(
+                label = label,
+                selected = reason == null && status?.level == level,
+                enabled = usable,
+                modifier = Modifier.weight(1f),
+                onClick = { onPick(level) }
+            )
+        }
+    }
+
+    status?.result?.let {
+        Spacer(Modifier.height(8.dp))
+        Text(it, color = Tac.Cyan, fontSize = 11.sp, fontFamily = Mono)
+    }
+
+    if (status?.pendingRestart == true) {
+        Spacer(Modifier.height(8.dp))
+        Text("Applies next time you open $gameLabel.", color = Tac.Amber, fontSize = 11.sp, lineHeight = 16.sp)
+        ResolutionAction("RESTART NOW", enabled = usable, onClick = onRestart)
+    }
+
+    if (status?.resetByRestart == true) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "The phone restarted, so Android put $gameLabel back in its default mode. Turbo sets " +
+                "${status.level?.label ?: "the preset"} again when you launch the game from Turbo.",
+            color = Tac.Amber,
+            fontSize = 11.sp,
+            lineHeight = 16.sp
+        )
+    }
+
+    status?.changedOutside?.let { now ->
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "$gameLabel's game mode was changed outside Turbo (now $now). Turbo won't overwrite it unless you say so.",
+            color = Tac.Amber,
+            fontSize = 11.sp,
+            lineHeight = 16.sp
+        )
+        ResolutionAction("RESTORE ANYWAY", enabled = enabled && ui?.busy != true, onClick = onRestoreAnyway)
+    }
+
+    (reason?.let { if (shizukuReady && status != null) "Unavailable: $it" else it } ?: ui?.note)?.let {
+        Spacer(Modifier.height(8.dp))
+        Text(it, color = Tac.Amber, fontSize = 11.sp, lineHeight = 16.sp)
+    }
+
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "Lowers the size $gameLabel renders at through Android's game mode; the screen itself " +
+            "is not changed. The game picks its own size from it, so the result is measured " +
+            "after its next launch.",
+        color = Tac.TextLo,
+        fontSize = 11.sp,
+        lineHeight = 16.sp
+    )
+}
 
 @Composable
-private fun ResolutionModule(
-    panel: ResolutionPanel,
-    shizuku: ShizukuState,
-    enabled: Boolean,
-    onPick: (Int) -> Unit,
-    onApply: () -> Unit,
-    onRestore: () -> Unit
-) {
-    val display = panel.display
-    val presets = display?.let { DisplayResolution.presets(it) }.orEmpty()
-    // Follow the current override until the user picks something.
-    val current = display?.let { state ->
-        presets.firstOrNull { !it.native && DisplayResolution.matches(state, it.target) }?.percent
-            ?: if (!state.hasOverride) 100 else null
+private fun ResolutionAction(label: String, enabled: Boolean, onClick: () -> Unit) {
+    TextButton(onClick = onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 0.dp)) {
+        Text(
+            label,
+            color = if (enabled) Tac.Amber else Tac.TextLo,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Black,
+            letterSpacing = 1.sp,
+            fontFamily = Mono
+        )
     }
-    val picked = panel.pick ?: current
-    val pickedPreset = presets.firstOrNull { it.percent == picked }
-
-    // No silent failure: every reason the lever is off is spelled out.
-    val blocked = when {
-        shizuku == ShizukuState.OFFLINE -> "Shizuku is not running. Start it to change the resolution."
-        shizuku == ShizukuState.NEEDS_PERMISSION ->
-            "Shizuku permission is missing. Grant it in Shizuku, or tap BOOST once to be asked."
-        panel.readFailed && display == null -> "Could not read wm size / wm density through Shizuku."
-        display == null -> "Reading the display..."
-        else -> null
-    }
-    val usable = enabled && blocked == null && !panel.busy
-    val canApply = usable && display != null && pickedPreset != null && !pickedPreset.native &&
-        !DisplayResolution.matches(display, pickedPreset.target)
-    val canRestore = shizuku == ShizukuState.READY && enabled && !panel.busy && display?.hasOverride == true
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = Tac.Surface,
-        border = BorderStroke(1.dp, Tac.Line)
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Text("RENDER RESOLUTION", color = Tac.TextLo, fontSize = 10.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Black)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                display?.let { displayText(it) } ?: "Current: unknown",
-                color = if (display?.hasOverride == true) Tac.Amber else Tac.TextHi,
-                fontSize = 11.sp,
-                fontFamily = Mono
-            )
-
-            if (presets.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    presets.forEach { preset ->
-                        ResolutionChip(
-                            label = preset.label,
-                            detail = preset.target.size.toString(),
-                            selected = preset.percent == picked,
-                            enabled = usable,
-                            modifier = Modifier.weight(1f),
-                            onClick = { onPick(preset.percent) }
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "Lowers the size the screen renders at, with density scaled to match. Applied " +
-                    "before launch only, never while the game runs. You confirm within 15 s or it " +
-                    "switches back, and it is restored when the game closes.",
-                color = Tac.TextLo,
-                fontSize = 11.sp,
-                lineHeight = 16.sp
-            )
-
-            (blocked ?: panel.note)?.let { reason ->
-                Spacer(Modifier.height(8.dp))
-                Text(reason, color = Tac.Amber, fontSize = 11.sp, lineHeight = 16.sp)
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = onApply,
-                    enabled = canApply,
-                    modifier = Modifier.weight(1f).height(38.dp),
-                    contentPadding = PaddingValues(0.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Tac.Cyan, disabledContainerColor = Tac.SurfaceElevated),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text(
-                        if (pickedPreset != null && !pickedPreset.native) "APPLY ${pickedPreset.target.size}" else "APPLY",
-                        color = if (canApply) Tac.Bg else Tac.TextLo,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Black,
-                        fontFamily = Mono
-                    )
-                }
-                OutlinedButton(
-                    onClick = onRestore,
-                    enabled = canRestore,
-                    modifier = Modifier.weight(1f).height(38.dp),
-                    contentPadding = PaddingValues(0.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, if (canRestore) Tac.Amber else Tac.Line)
-                ) {
-                    Text(
-                        "RESTORE DEFAULT",
-                        color = if (canRestore) Tac.Amber else Tac.TextLo,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Black,
-                        fontFamily = Mono
-                    )
-                }
-            }
-
-            if (display?.hasOverride == true) {
-                Spacer(Modifier.height(10.dp))
-                Text(ADB_FALLBACK, color = Tac.TextLo, fontSize = 10.sp, lineHeight = 14.sp, fontFamily = Mono)
-            }
-        }
-    }
-}
-
-private fun displayText(state: DisplayState): String {
-    val now = "${state.size} @ ${state.density} dpi"
-    return if (state.hasOverride) "Now: $now (override, native ${state.physicalSize} @ ${state.physicalDensity})" else "Now: $now (native)"
 }
 
 @Composable
 private fun ResolutionChip(
     label: String,
-    detail: String,
     selected: Boolean,
     enabled: Boolean,
     modifier: Modifier = Modifier,
@@ -484,63 +443,78 @@ private fun ResolutionChip(
 ) {
     Surface(
         modifier = modifier
+            .heightIn(min = 40.dp)
             .alpha(if (enabled) 1f else 0.5f)
             .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
-            .semantics { contentDescription = "$label, $detail${if (selected) ", selected" else ""}" },
+            .semantics { contentDescription = "$label${if (selected) ", selected" else ""}" },
         shape = RoundedCornerShape(10.dp),
         color = if (selected) Tac.Cyan.copy(alpha = 0.12f) else Color.Transparent,
         border = BorderStroke(1.dp, if (selected) Tac.Cyan else Tac.Line)
     ) {
-        Column(Modifier.padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
             Text(label, color = if (selected) Tac.Cyan else Tac.TextLo, fontSize = 10.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
-            Text(detail, color = Tac.TextLo, fontSize = 9.sp, fontFamily = Mono)
         }
     }
 }
 
-/** "Keep this resolution?" with the guard's countdown. Not dismissable: no answer means restore. */
+/** "Restart now" closes the game: asked every time, never done on its own. */
 @Composable
-private fun KeepResolutionDialog(
-    target: ResolutionTarget,
-    deadline: Long,
-    busy: Boolean,
-    onKeep: () -> Unit,
-    onRestore: () -> Unit
-) {
-    // The guard service owns the timer; this only displays it.
-    val secondsLeft by produceState(initialValue = 15, deadline) {
-        while (true) {
-            value = ((deadline - SystemClock.elapsedRealtime() + 999) / 1000).toInt().coerceAtLeast(0)
-            delay(250)
-        }
-    }
+private fun RestartGameDialog(gameLabel: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
-        onDismissRequest = {},
+        onDismissRequest = onDismiss,
         containerColor = Tac.Surface,
         title = {
-            Text("KEEP THIS RESOLUTION?", color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            Text("RESTART $gameLabel?", color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
         },
         text = {
             Text(
-                "$target is applied. It switches back in $secondsLeft s unless you keep it.\n\n$ADB_FALLBACK",
+                "This closes $gameLabel right away and opens it again with the new resolution. " +
+                    "Anything unsaved, including a match in progress, may be lost.",
                 color = Tac.TextLo,
                 fontSize = 12.sp,
                 lineHeight = 17.sp
             )
         },
         confirmButton = {
-            Button(
-                onClick = onKeep,
-                enabled = !busy,
-                colors = ButtonDefaults.buttonColors(containerColor = Tac.Cyan),
-                shape = RoundedCornerShape(10.dp)
-            ) {
-                Text("KEEP", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+            Button(onClick = onConfirm, colors = ButtonDefaults.buttonColors(containerColor = Tac.Amber), shape = RoundedCornerShape(10.dp)) {
+                Text("CLOSE AND RESTART", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
             }
         },
         dismissButton = {
-            TextButton(onClick = onRestore, enabled = !busy) {
-                Text("RESTORE NOW", color = Tac.Amber, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            }
+        }
+    )
+}
+
+/** This build's one-time question about a display-wide override. Not dismissable: it needs an answer. */
+@Composable
+private fun DisplayOverrideDialog(state: DisplayState, onReset: () -> Unit, onKeep: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = {},
+        containerColor = Tac.Surface,
+        title = {
+            Text("DISPLAY OVERRIDE", color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+        },
+        text = {
+            Text(
+                "A display override is active. Reset to device default?\n\n" +
+                    "Now: ${state.size} @ ${state.density} dpi\n" +
+                    "Device default: ${state.physicalSize} @ ${state.physicalDensity} dpi",
+                color = Tac.TextLo,
+                fontSize = 12.sp,
+                lineHeight = 17.sp
+            )
+        },
+        confirmButton = {
+            Button(onClick = onReset, colors = ButtonDefaults.buttonColors(containerColor = Tac.Cyan), shape = RoundedCornerShape(10.dp)) {
+                Text("RESET", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onKeep) {
+                Text("KEEP", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
             }
         }
     )
@@ -716,7 +690,13 @@ private fun GameSelector(
     onSelectGame: (String) -> Unit,
     onRateChange: (String, Float) -> Unit,
     onAddGame: () -> Unit,
-    onRemoveGame: (String) -> Unit
+    onRemoveGame: (String) -> Unit,
+    /** Per-game render resolution; null hides it (Android 13 and older). */
+    resolution: Map<String, GameResolutionUi>?,
+    shizukuReady: Boolean,
+    onPickResolution: (String, ResolutionLevel?) -> Unit,
+    onRestoreResolutionAnyway: (String) -> Unit,
+    onRestartGame: (String) -> Unit
 ) {
     Column(Modifier.fillMaxWidth()) {
         Text(
@@ -753,7 +733,13 @@ private fun GameSelector(
                         enabled = enabled,
                         onSelect = { onSelectGame(pkg) },
                         onRateChange = { onRateChange(pkg, it) },
-                        onRemove = { onRemoveGame(pkg) }
+                        onRemove = { onRemoveGame(pkg) },
+                        showResolution = resolution != null,
+                        resolution = resolution?.get(pkg),
+                        shizukuReady = shizukuReady,
+                        onPickResolution = { onPickResolution(pkg, it) },
+                        onRestoreResolutionAnyway = { onRestoreResolutionAnyway(pkg) },
+                        onRestart = { onRestartGame(pkg) }
                     )
                 }
             }
@@ -824,7 +810,13 @@ private fun GameCard(
     enabled: Boolean,
     onSelect: () -> Unit,
     onRateChange: (Float) -> Unit,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    showResolution: Boolean,
+    resolution: GameResolutionUi?,
+    shizukuReady: Boolean,
+    onPickResolution: (ResolutionLevel?) -> Unit,
+    onRestoreResolutionAnyway: () -> Unit,
+    onRestart: () -> Unit
 ) {
     val border by animateColorAsState(if (selected) Tac.Cyan else Tac.Line, label = "gameBorder")
     val bg by animateColorAsState(
@@ -891,6 +883,21 @@ private fun GameCard(
                 fontSize = 11.sp,
                 lineHeight = 16.sp
             )
+
+            if (showResolution) {
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = Tac.Line, thickness = 1.dp)
+                Spacer(Modifier.height(12.dp))
+                GameResolutionRow(
+                    gameLabel = game.label,
+                    ui = resolution,
+                    shizukuReady = shizukuReady,
+                    enabled = enabled,
+                    onPick = onPickResolution,
+                    onRestoreAnyway = onRestoreResolutionAnyway,
+                    onRestart = onRestart
+                )
+            }
         }
     }
 }
@@ -935,11 +942,11 @@ private fun durationText(ms: Long): String {
     return if (min > 0) "$min min $sec s" else "$sec s"
 }
 
-/** `900x2050@400` -> `900x2050, 400 dpi`. */
-private fun renderResolutionText(value: String?): String = when (value) {
-    null -> "unavailable"
-    DisplayResolution.NATIVE -> "native"
-    else -> value.replace("@", ", ") + " dpi"
+/** `LOW 0.6` or `default`; records from the removed display override hold `900x2050@400`. */
+private fun renderResolutionText(value: String?): String = when {
+    value == null -> "unavailable"
+    value.contains('@') -> "display " + value.replace("@", ", ") + " dpi"
+    else -> value
 }
 
 private fun fpsText(fps: Float?): String = fps?.let { String.format(Locale.US, "%.1f", it) } ?: "unavailable"
