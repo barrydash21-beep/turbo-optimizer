@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-10-14
+
+### Added
+- Two stronger render resolution presets on each game's card: LOWER (0.55x) and LOWEST (0.5x), next to MEDIUM (0.65x) and LOW (0.6x). Android applies the factor relative to the display, so a game that already caps its own render size changed little at 0.65 and 0.6.
+
+### Changed
+- Every option on the card now shows its factor, and the card notes that lower factors cut GPU work but look softer and that the effect depends on the game's own render cap. The measured "Renders at ..." line after the next launch is unchanged and is still the only size shown.
+- Presets chosen in 1.2.0 load as before, and apply, DEFAULT, the "changed outside Turbo" confirm and the restart handling work the same for the new ones.
+
 ## [1.2.0] - 2026-10-07
 
 ### Changed
