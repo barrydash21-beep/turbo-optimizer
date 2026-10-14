@@ -191,7 +191,7 @@ object GameResolution {
     }
 
     /**
-     * Fewer pixels than this is no effect: CoD Mobile measured 720x1639 against 720x1648 under
+     * Fewer pixels than this is no effect: a capped game measured 720x1639 against 720x1648 under
      * a downscale its own 720p cap already sits below, a few rows of window shape, not a change.
      */
     private const val NO_EFFECT_BELOW_PERCENT = 2
@@ -445,7 +445,7 @@ object GameResolution {
      * Starts a detached shell watcher that samples the SurfaceFlinger buffers of a [pkg]
      * process other than [stalePid], and saves them for [collect] once two samples in a row
      * agree on the size. It keeps sampling and overwriting while the game runs: on a Pova 7,
-     * Mobile Legends drew its previous session's size (815x1858) for a while on the first
+     * a game drew its previous session's size (815x1858) for a while on the first
      * launch after a change, and 702x1599 at 0.65 from the next one. It runs in the Shizuku
      * shell rather than this app because HiOS freezes this app's uid once backgrounded.
      * [scale] is the setting the launch runs under, null for the game's default.

@@ -92,8 +92,8 @@ private class GameShell(
 
 class GameResolutionTest {
 
-    private val ml = "com.mobile.legends"
-    private val codm = "com.garena.game.codm"
+    private val uncapped = "com.mobile.legends"
+    private val capped = "com.garena.game.codm"
 
     // --- preset value mapping -----------------------------------------------------------
 
@@ -110,39 +110,39 @@ class GameResolutionTest {
 
     @Test
     fun `apply sends the preset's exact downscale value`() {
-        val shell = GameShell(ml)
-        GameResolution.apply(shell, FakeStore(), ml, ResolutionLevel.LOW, null)
-        assertEquals(listOf("cmd game set --downscale 0.6 $ml"), shell.writes)
+        val shell = GameShell(uncapped)
+        GameResolution.apply(shell, FakeStore(), uncapped, ResolutionLevel.LOW, null)
+        assertEquals(listOf("cmd game set --downscale 0.6 $uncapped"), shell.writes)
     }
 
-    // --- restore: no prior config (Mobile Legends) ---------------------------------------
+    // --- restore: no prior config --------------------------------------------
 
     @Test
     fun `no prior config - restore resets to exactly what was there and clears the snapshot`() {
-        val shell = GameShell(ml)
+        val shell = GameShell(uncapped)
         val store = FakeStore()
 
-        val applied = GameResolution.apply(shell, store, ml, ResolutionLevel.MEDIUM, null)
+        val applied = GameResolution.apply(shell, store, uncapped, ResolutionLevel.MEDIUM, null)
         assertTrue(applied.detail, applied.ok)
         assertEquals("custom", shell.mode)
         assertEquals("0.65" to null, shell.configs[4])
-        assertEquals("0.65", GameResolution.applied(store, ml))
+        assertEquals("0.65", GameResolution.applied(store, uncapped))
 
         shell.commands.clear()
-        val restored = GameResolution.restore(shell, store, ml, force = false, runningPid = null)
+        val restored = GameResolution.restore(shell, store, uncapped, force = false, runningPid = null)
 
         assertTrue(restored.detail, restored.ok)
-        assertEquals(listOf("cmd game reset $ml", "cmd game mode standard $ml"), shell.writes)
+        assertEquals(listOf("cmd game reset $uncapped", "cmd game mode standard $uncapped"), shell.writes)
         assertEquals("standard", shell.mode)
         assertTrue(shell.configs.isEmpty())
-        assertNull(GameResolution.snapshot(store, ml))
-        assertNull(GameResolution.applied(store, ml))
+        assertNull(GameResolution.snapshot(store, uncapped))
+        assertNull(GameResolution.applied(store, uncapped))
     }
 
-    // --- restore: prior config like CoD Mobile's -----------------------------------------
+    // --- restore: prior configs in the game's own modes ---------------------
 
-    private fun codmShell() = GameShell(
-        codm,
+    private fun cappedShell() = GameShell(
+        capped,
         mode = "performance",
         available = listOf("standard", "performance", "custom"),
         configs = mutableMapOf(2 to ("0.8" to "60"), 4 to ("0.7" to "90"))
@@ -150,36 +150,36 @@ class GameResolutionTest {
 
     @Test
     fun `prior config - restore writes back the old custom config and mode, never reset`() {
-        val shell = codmShell()
+        val shell = cappedShell()
         val store = FakeStore()
 
-        assertTrue(GameResolution.apply(shell, store, codm, ResolutionLevel.LOW, null).ok)
+        assertTrue(GameResolution.apply(shell, store, capped, ResolutionLevel.LOW, null).ok)
         assertEquals("0.6" to null, shell.configs[4])
 
         shell.commands.clear()
-        val restored = GameResolution.restore(shell, store, codm, force = false, runningPid = null)
+        val restored = GameResolution.restore(shell, store, capped, force = false, runningPid = null)
 
         assertTrue(restored.detail, restored.ok)
-        assertEquals(listOf("cmd game set --downscale 0.7 --fps 90 $codm", "cmd game mode performance $codm"), shell.writes)
+        assertEquals(listOf("cmd game set --downscale 0.7 --fps 90 $capped", "cmd game mode performance $capped"), shell.writes)
         assertEquals("performance", shell.mode)
         assertEquals("0.8" to "60", shell.configs[2])
         assertEquals("0.7" to "90", shell.configs[4])
-        assertNull(GameResolution.snapshot(store, codm))
+        assertNull(GameResolution.snapshot(store, capped))
     }
 
     @Test
     fun `a second preset keeps the first snapshot, never one taken from the app's own values`() {
-        val shell = codmShell()
+        val shell = cappedShell()
         val store = FakeStore()
 
-        assertTrue(GameResolution.apply(shell, store, codm, ResolutionLevel.LOW, null).ok)
-        assertTrue(GameResolution.apply(shell, store, codm, ResolutionLevel.MEDIUM, null).ok)
+        assertTrue(GameResolution.apply(shell, store, capped, ResolutionLevel.LOW, null).ok)
+        assertTrue(GameResolution.apply(shell, store, capped, ResolutionLevel.MEDIUM, null).ok)
 
-        val snap = GameResolution.snapshot(store, codm)!!
+        val snap = GameResolution.snapshot(store, capped)!!
         assertEquals("performance", snap.mode)
         assertEquals(InterventionConfig("0.7", "90"), snap.custom)
 
-        assertTrue(GameResolution.restore(shell, store, codm, force = false, runningPid = null).ok)
+        assertTrue(GameResolution.restore(shell, store, capped, force = false, runningPid = null).ok)
         assertEquals("performance", shell.mode)
         assertEquals("0.7" to "90", shell.configs[4])
     }
@@ -187,19 +187,19 @@ class GameResolutionTest {
     @Test
     fun `other modes configured but no custom config - scaling is switched off, other configs kept`() {
         val shell = GameShell(
-            codm,
+            capped,
             mode = "performance",
             available = listOf("standard", "performance", "custom"),
             configs = mutableMapOf(2 to ("0.8" to "60"))
         )
         val store = FakeStore()
 
-        assertTrue(GameResolution.apply(shell, store, codm, ResolutionLevel.MEDIUM, null).ok)
+        assertTrue(GameResolution.apply(shell, store, capped, ResolutionLevel.MEDIUM, null).ok)
         shell.commands.clear()
-        val restored = GameResolution.restore(shell, store, codm, force = false, runningPid = null)
+        val restored = GameResolution.restore(shell, store, capped, force = false, runningPid = null)
 
         assertTrue(restored.detail, restored.ok)
-        assertEquals(listOf("cmd game set --downscale disable $codm", "cmd game mode performance $codm"), shell.writes)
+        assertEquals(listOf("cmd game set --downscale disable $capped", "cmd game mode performance $capped"), shell.writes)
         assertEquals("0.8" to "60", shell.configs[2])
         assertEquals("performance", shell.mode)
     }
@@ -208,44 +208,44 @@ class GameResolutionTest {
 
     @Test
     fun `changed outside the app - restore refuses and writes nothing, keeps the snapshot`() {
-        val shell = codmShell()
+        val shell = cappedShell()
         val store = FakeStore()
-        assertTrue(GameResolution.apply(shell, store, codm, ResolutionLevel.LOW, null).ok)
+        assertTrue(GameResolution.apply(shell, store, capped, ResolutionLevel.LOW, null).ok)
 
         // Something else (Game Space, the user, adb) switches the game's mode.
         shell.mode = "standard"
         shell.commands.clear()
-        val refused = GameResolution.restore(shell, store, codm, force = false, runningPid = null)
+        val refused = GameResolution.restore(shell, store, capped, force = false, runningPid = null)
 
         assertFalse(refused.ok)
         assertTrue(refused.changedOutside)
         assertTrue(refused.detail, refused.detail.contains("now standard"))
         assertTrue(shell.writes.isEmpty())
         assertEquals("standard", shell.mode)
-        assertTrue(GameResolution.snapshot(store, codm) != null)
-        assertEquals("standard", GameResolution.status(shell, store, codm).changedOutside)
+        assertTrue(GameResolution.snapshot(store, capped) != null)
+        assertEquals("standard", GameResolution.status(shell, store, capped).changedOutside)
     }
 
     @Test
     fun `changed outside - a different downscale counts too, and restore anyway puts the snapshot back`() {
-        val shell = codmShell()
+        val shell = cappedShell()
         val store = FakeStore()
-        assertTrue(GameResolution.apply(shell, store, codm, ResolutionLevel.LOW, null).ok)
+        assertTrue(GameResolution.apply(shell, store, capped, ResolutionLevel.LOW, null).ok)
         shell.configs[4] = "0.5" to null
 
-        assertTrue(GameResolution.restore(shell, store, codm, force = false, runningPid = null).changedOutside)
+        assertTrue(GameResolution.restore(shell, store, capped, force = false, runningPid = null).changedOutside)
 
-        val forced = GameResolution.restore(shell, store, codm, force = true, runningPid = null)
+        val forced = GameResolution.restore(shell, store, capped, force = true, runningPid = null)
         assertTrue(forced.detail, forced.ok)
         assertEquals("performance", shell.mode)
         assertEquals("0.7" to "90", shell.configs[4])
-        assertNull(GameResolution.snapshot(store, codm))
+        assertNull(GameResolution.snapshot(store, capped))
     }
 
     @Test
     fun `restore with nothing applied does nothing`() {
-        val shell = codmShell()
-        val result = GameResolution.restore(shell, FakeStore(), codm, force = false, runningPid = null)
+        val shell = cappedShell()
+        val result = GameResolution.restore(shell, FakeStore(), capped, force = false, runningPid = null)
         assertTrue(result.ok)
         assertTrue(shell.writes.isEmpty())
     }
@@ -254,68 +254,68 @@ class GameResolutionTest {
 
     @Test
     fun `a restart that drops the mode is not an outside change, and is set again before launch`() {
-        val shell = GameShell(ml)
+        val shell = GameShell(uncapped)
         val store = FakeStore()
-        assertTrue(GameResolution.apply(shell, store, ml, ResolutionLevel.MEDIUM, null).ok)
+        assertTrue(GameResolution.apply(shell, store, uncapped, ResolutionLevel.MEDIUM, null).ok)
 
-        // Reboot: what the Pova 7 showed for Mobile Legends.
+        // Reboot: what the Pova 7 showed after a restart.
         shell.bootId = "boot-2"
         shell.mode = "standard"
-        val status = GameResolution.status(shell, store, ml)
+        val status = GameResolution.status(shell, store, uncapped)
         assertTrue(status.resetByRestart)
         assertNull(status.changedOutside)
 
         shell.commands.clear()
-        val again = GameResolution.reapplyBeforeLaunch(shell, store, ml)!!
+        val again = GameResolution.reapplyBeforeLaunch(shell, store, uncapped)!!
         assertTrue(again.detail, again.ok)
-        assertEquals(listOf("cmd game mode custom $ml"), shell.writes)
+        assertEquals(listOf("cmd game mode custom $uncapped"), shell.writes)
         assertEquals("custom", shell.mode)
         assertEquals("0.65" to null, shell.configs[4])
 
         // Done once: nothing to do on the next launch.
-        assertNull(GameResolution.reapplyBeforeLaunch(shell, store, ml))
-        assertFalse(GameResolution.status(shell, store, ml).resetByRestart)
+        assertNull(GameResolution.reapplyBeforeLaunch(shell, store, uncapped))
+        assertFalse(GameResolution.status(shell, store, uncapped).resetByRestart)
     }
 
     @Test
     fun `standard mode without a restart is an outside change and is never re-applied`() {
-        val shell = GameShell(ml)
+        val shell = GameShell(uncapped)
         val store = FakeStore()
-        assertTrue(GameResolution.apply(shell, store, ml, ResolutionLevel.MEDIUM, null).ok)
+        assertTrue(GameResolution.apply(shell, store, uncapped, ResolutionLevel.MEDIUM, null).ok)
         shell.mode = "standard"
 
-        assertEquals("standard", GameResolution.status(shell, store, ml).changedOutside)
+        assertEquals("standard", GameResolution.status(shell, store, uncapped).changedOutside)
         shell.commands.clear()
-        assertNull(GameResolution.reapplyBeforeLaunch(shell, store, ml))
+        assertNull(GameResolution.reapplyBeforeLaunch(shell, store, uncapped))
         assertTrue(shell.writes.isEmpty())
     }
 
     @Test
     fun `after a restart a config someone else changed is left alone`() {
-        val shell = GameShell(ml)
+        val shell = GameShell(uncapped)
         val store = FakeStore()
-        assertTrue(GameResolution.apply(shell, store, ml, ResolutionLevel.MEDIUM, null).ok)
+        assertTrue(GameResolution.apply(shell, store, uncapped, ResolutionLevel.MEDIUM, null).ok)
         shell.bootId = "boot-2"
         shell.mode = "standard"
         shell.configs[4] = "0.65" to "60" // a frame-rate cap this app never sets
 
-        val status = GameResolution.status(shell, store, ml)
+        val status = GameResolution.status(shell, store, uncapped)
         assertFalse(status.resetByRestart)
         assertEquals("standard", status.changedOutside)
         shell.commands.clear()
-        assertNull(GameResolution.reapplyBeforeLaunch(shell, store, ml))
+        assertNull(GameResolution.reapplyBeforeLaunch(shell, store, uncapped))
         assertTrue(shell.writes.isEmpty())
     }
 
     @Test
     fun `DEFAULT after a restart reset restores without asking`() {
-        val shell = codmShell()
+        val shell = cappedShell()
         val store = FakeStore()
-        assertTrue(GameResolution.apply(shell, store, codm, ResolutionLevel.LOW, null).ok)
+        assertTrue(GameResolution.apply(shell, store, capped, ResolutionLevel.LOW, null).ok)
         shell.bootId = "boot-2"
         shell.mode = "standard"
 
-        val restored = GameResolution.restore(shell, store, codm, force = false, runningPid = null)
+        val restored = GameResolution.restore(shell, store, capped, force = false, runningPid = null)
         assertTrue(restored.detail, restored.ok)
         assertEquals("performance", shell.mode)
         assertEquals("0.7" to "90", shell.configs[4])
@@ -340,8 +340,8 @@ class GameResolutionTest {
 
     @Test
     fun `a game without the custom mode is unavailable`() {
-        val shell = GameShell(ml, available = listOf("standard", "performance"))
-        val result = GameResolution.apply(shell, FakeStore(), ml, ResolutionLevel.LOW, null)
+        val shell = GameShell(uncapped, available = listOf("standard", "performance"))
+        val result = GameResolution.apply(shell, FakeStore(), uncapped, ResolutionLevel.LOW, null)
         assertFalse(result.ok)
         assertTrue(result.unavailable)
         assertTrue(shell.writes.isEmpty())
@@ -351,22 +351,22 @@ class GameResolutionTest {
 
     @Test
     fun `a change while the game runs is pending until that process is gone`() {
-        val shell = GameShell(ml, pid = "16439")
+        val shell = GameShell(uncapped, pid = "16439")
         val store = FakeStore()
 
-        assertTrue(GameResolution.apply(shell, store, ml, ResolutionLevel.MEDIUM, "16439").ok)
-        assertTrue(GameResolution.status(shell, store, ml).pendingRestart)
+        assertTrue(GameResolution.apply(shell, store, uncapped, ResolutionLevel.MEDIUM, "16439").ok)
+        assertTrue(GameResolution.status(shell, store, uncapped).pendingRestart)
 
         shell.pid = "20001" // relaunched
-        assertFalse(GameResolution.status(shell, store, ml).pendingRestart)
-        assertNull(GameResolution.stalePid(store, ml))
+        assertFalse(GameResolution.status(shell, store, uncapped).pendingRestart)
+        assertNull(GameResolution.stalePid(store, uncapped))
     }
 
     @Test
     fun `apply never force-stops the game`() {
-        val shell = GameShell(ml, pid = "16439")
-        GameResolution.apply(shell, FakeStore(), ml, ResolutionLevel.LOW, "16439")
-        GameResolution.restore(shell, FakeStore(), ml, force = true, runningPid = "16439")
+        val shell = GameShell(uncapped, pid = "16439")
+        GameResolution.apply(shell, FakeStore(), uncapped, ResolutionLevel.LOW, "16439")
+        GameResolution.restore(shell, FakeStore(), uncapped, force = true, runningPid = "16439")
         assertFalse(shell.commands.any { it.contains("force-stop") || it.startsWith("kill") })
     }
 
@@ -376,19 +376,19 @@ class GameResolutionTest {
     fun `parses list-modes and list-configs as printed on Android 16`() {
         assertEquals(
             "performance" to listOf("standard", "performance", "custom"),
-            GameResolution.parseModes("$codm current mode: performance, available game modes: [standard,performance,custom]")
+            GameResolution.parseModes("$capped current mode: performance, available game modes: [standard,performance,custom]")
         )
         val configs = GameResolution.parseConfigs(
-            "$codm interventions: \n[Name:$codm Modes: {2=[Game Mode:2,Scaling:0.8,Use Angle:false,Fps:60,Loading Boost Duration:-1], " +
+            "$capped interventions: \n[Name:$capped Modes: {2=[Game Mode:2,Scaling:0.8,Use Angle:false,Fps:60,Loading Boost Duration:-1], " +
                 "4=[Game Mode:4,Scaling:0.7,Use Angle:false,Fps:90,Loading Boost Duration:-1]}]"
         )!!
         assertEquals(InterventionConfig("0.8", "60"), configs[2])
         assertEquals(InterventionConfig("0.7", "90"), configs[4])
         assertEquals(
             InterventionConfig("0.83", null),
-            GameResolution.parseConfigs("[Name:$ml Modes: {4=[Game Mode:4,Scaling:0.83,Use Angle:false,Fps:,Loading Boost Duration:-1]}]")!![4]
+            GameResolution.parseConfigs("[Name:$uncapped Modes: {4=[Game Mode:4,Scaling:0.83,Use Angle:false,Fps:,Loading Boost Duration:-1]}]")!![4]
         )
-        assertEquals(emptyMap<Int, InterventionConfig>(), GameResolution.parseConfigs(" No intervention found for package $ml"))
+        assertEquals(emptyMap<Int, InterventionConfig>(), GameResolution.parseConfigs(" No intervention found for package $uncapped"))
         assertNull(GameResolution.parseConfigs("something else"))
         assertNull(GameResolution.parseModes("Error: unknown"))
     }
@@ -402,12 +402,12 @@ class GameResolutionTest {
 
     @Test
     fun `buffer size comes from the game's SurfaceView, not its window or another package`() {
-        assertEquals(BufferSize(810, 1845), GameResolution.parseBuffers(sfLines, ml))
+        assertEquals(BufferSize(810, 1845), GameResolution.parseBuffers(sfLines, uncapped))
         // Only a window buffer: that is what the game draws into.
-        assertEquals(BufferSize(1080, 2460), GameResolution.parseBuffers(sfLines.lines()[2], ml))
+        assertEquals(BufferSize(1080, 2460), GameResolution.parseBuffers(sfLines.lines()[2], uncapped))
         assertNull(GameResolution.parseBuffers(sfLines, "com.example.other"))
-        assertNull(GameResolution.parseBuffers("garbage", ml))
-        assertNull(GameResolution.parseBuffers(null, ml))
+        assertNull(GameResolution.parseBuffers("garbage", uncapped))
+        assertNull(GameResolution.parseBuffers(null, uncapped))
     }
 
     // --- result line -------------------------------------------------------------------------
@@ -415,11 +415,11 @@ class GameResolutionTest {
     @Test
     fun `result line compares with the native measurement`() {
         val native = BufferSize(810, 1845)
-        // Measured on the Pova 7: Mobile Legends at 0.67.
+        // Measured on the Pova 7: uncapped game, native 810x1845, at 0.67.
         assertEquals("Renders at 724x1648 (−20% pixels)", GameResolution.resultText(native, BufferSize(724, 1648)))
-        // Mobile Legends at 0.83: more pixels than native.
+        // Uncapped game at 0.83: more pixels than native.
         assertEquals("No effect: game already renders below this", GameResolution.resultText(native, BufferSize(815, 1858)))
-        // CoD Mobile at 0.67: under half a percent, within its own 720p cap.
+        // Capped game, native 720x1648, at 0.67: under half a percent, within its own 720p cap.
         assertEquals(
             "No effect: game already renders below this",
             GameResolution.resultText(BufferSize(720, 1648), BufferSize(720, 1639))
@@ -431,73 +431,73 @@ class GameResolutionTest {
     // --- measurement filing ------------------------------------------------------------------
 
     private fun file(pid: String, scale: String?, size: String) =
-        "pid:$pid\nscale:${scale ?: "none"}\n+ name:a SurfaceView[$ml/b.C]#1, w/h:$size, x"
+        "pid:$pid\nscale:${scale ?: "none"}\n+ name:a SurfaceView[$uncapped/b.C]#1, w/h:$size, x"
 
     @Test
     fun `native is stored once, under the game's default only`() {
-        val shell = GameShell(ml, measureFile = file("100", null, "810x1845"))
+        val shell = GameShell(uncapped, measureFile = file("100", null, "810x1845"))
         val store = FakeStore()
 
-        assertTrue(GameResolution.collect(shell, store, ml))
-        assertEquals(BufferSize(810, 1845), GameResolution.native(store, ml))
+        assertTrue(GameResolution.collect(shell, store, uncapped))
+        assertEquals(BufferSize(810, 1845), GameResolution.native(store, uncapped))
         assertNull(shell.measureFile) // removed once read
 
         shell.measureFile = file("101", null, "1080x2460")
-        GameResolution.collect(shell, store, ml)
-        assertEquals(BufferSize(810, 1845), GameResolution.native(store, ml))
+        GameResolution.collect(shell, store, uncapped)
+        assertEquals(BufferSize(810, 1845), GameResolution.native(store, uncapped))
     }
 
     @Test
     fun `a measurement is shown only for the preset it was taken under`() {
-        val shell = GameShell(ml)
+        val shell = GameShell(uncapped)
         val store = FakeStore()
-        assertTrue(GameResolution.apply(shell, store, ml, ResolutionLevel.LOW, null).ok)
+        assertTrue(GameResolution.apply(shell, store, uncapped, ResolutionLevel.LOW, null).ok)
 
         shell.measureFile = file("200", "0.65", "702x1599") // an older preset: dropped
-        assertFalse(GameResolution.collect(shell, store, ml))
-        assertNull(GameResolution.measured(store, ml, "0.6"))
+        assertFalse(GameResolution.collect(shell, store, uncapped))
+        assertNull(GameResolution.measured(store, uncapped, "0.6"))
 
         shell.measureFile = file("201", "0.6", "648x1476")
-        assertTrue(GameResolution.collect(shell, store, ml))
-        assertEquals(BufferSize(648, 1476), GameResolution.measured(store, ml, "0.6"))
-        assertEquals("Renders at 648x1476", GameResolution.status(shell, store, ml).result)
+        assertTrue(GameResolution.collect(shell, store, uncapped))
+        assertEquals(BufferSize(648, 1476), GameResolution.measured(store, uncapped, "0.6"))
+        assertEquals("Renders at 648x1476", GameResolution.status(shell, store, uncapped).result)
     }
 
     @Test
     fun `a measurement of the process that predates the change is ignored`() {
-        val shell = GameShell(ml, pid = "300")
+        val shell = GameShell(uncapped, pid = "300")
         val store = FakeStore()
-        assertTrue(GameResolution.apply(shell, store, ml, ResolutionLevel.LOW, "300").ok)
+        assertTrue(GameResolution.apply(shell, store, uncapped, ResolutionLevel.LOW, "300").ok)
 
-        assertFalse(GameResolution.record(store, ml, GameResolution.Measurement("300", "0.6", BufferSize(810, 1845))))
-        assertNull(GameResolution.measured(store, ml, "0.6"))
+        assertFalse(GameResolution.record(store, uncapped, GameResolution.Measurement("300", "0.6", BufferSize(810, 1845))))
+        assertNull(GameResolution.measured(store, uncapped, "0.6"))
     }
 
     @Test
     fun `no measurement means no result line, never an estimate`() {
-        val shell = GameShell(ml)
+        val shell = GameShell(uncapped)
         val store = FakeStore()
-        assertTrue(GameResolution.apply(shell, store, ml, ResolutionLevel.LOW, null).ok)
-        assertNull(GameResolution.status(shell, store, ml).result)
+        assertTrue(GameResolution.apply(shell, store, uncapped, ResolutionLevel.LOW, null).ok)
+        assertNull(GameResolution.status(shell, store, uncapped).result)
         shell.measureFile = "pid:5\nscale:0.6\nno buffer lines here"
-        assertNull(GameResolution.status(shell, store, ml).result)
+        assertNull(GameResolution.status(shell, store, uncapped).result)
     }
 
     // --- session record ---------------------------------------------------------------------
 
     @Test
     fun `session records carry the preset and older ones still decode`() {
-        val shell = GameShell(ml)
+        val shell = GameShell(uncapped)
         val store = FakeStore()
-        assertEquals("default", GameResolution.sessionValue(store, ml))
-        assertTrue(GameResolution.apply(shell, store, ml, ResolutionLevel.LOW, null).ok)
-        assertEquals("LOW 0.6", GameResolution.sessionValue(store, ml))
+        assertEquals("default", GameResolution.sessionValue(store, uncapped))
+        assertTrue(GameResolution.apply(shell, store, uncapped, ResolutionLevel.LOW, null).ok)
+        assertEquals("LOW 0.6", GameResolution.sessionValue(store, uncapped))
 
         val record = SessionRecord(
-            packageName = ml, refreshRate = 90f, startedAtMs = 1L, durationMs = 2L,
+            packageName = uncapped, refreshRate = 90f, startedAtMs = 1L, durationMs = 2L,
             avgFps = null, onePercentLowFps = null, msToThermal1 = null, maxThermal = null,
             samples = 0, fpsSamples = 0, thermalSamples = 0, observedPeak = null,
-            renderResolution = GameResolution.sessionValue(store, ml)
+            renderResolution = GameResolution.sessionValue(store, uncapped)
         )
         assertEquals(record, SessionRecord.decode(record.encode()))
         // Written by the removed display lever.
@@ -508,13 +508,13 @@ class GameResolutionTest {
 
     @Test
     fun `watcher runs detached in the shell, skips the stale process and replaces an older watcher`() {
-        val shell = GameShell(ml)
-        assertTrue(GameResolution.startWatcher(shell, ml, "0.6", "16439"))
+        val shell = GameShell(uncapped)
+        assertTrue(GameResolution.startWatcher(shell, uncapped, "0.6", "16439"))
 
         val launch = shell.commands.last()
         assertTrue(launch, launch.startsWith("setsid sh -c '"))
         assertTrue(launch, launch.endsWith("</dev/null >/dev/null 2>&1 &"))
-        assertTrue(launch, launch.contains("pidof $ml"))
+        assertTrue(launch, launch.contains("pidof $uncapped"))
         assertTrue(launch, launch.contains("!= \"16439\""))
         assertTrue(launch, launch.contains("echo \"scale:0.6\""))
         assertTrue(launch, launch.contains("dumpsys SurfaceFlinger"))
@@ -524,7 +524,7 @@ class GameResolutionTest {
 
     @Test
     fun `nothing reaches the shell for a value that is not a package name`() {
-        val shell = GameShell(ml)
+        val shell = GameShell(uncapped)
         val bad = "x; reboot"
         assertFalse(GameResolution.startWatcher(shell, bad, null, null))
         assertFalse(GameResolution.apply(shell, FakeStore(), bad, ResolutionLevel.LOW, null).ok)
