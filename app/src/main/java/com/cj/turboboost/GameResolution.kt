@@ -4,10 +4,18 @@ import android.util.Log
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/** A preset on a game's card. [scale] is exactly what `cmd game set --downscale` receives. */
+/**
+ * A preset on a game's card. [scale] is exactly what `cmd game set --downscale` receives; the
+ * shell accepts 0.3 to 0.9 in steps of 0.05. Selections are stored by [scale], not by name.
+ */
 enum class ResolutionLevel(val label: String, val scale: String) {
     MEDIUM("MEDIUM", "0.65"),
-    LOW("LOW", "0.6");
+    LOW("LOW", "0.6"),
+    LOWER("LOWER", "0.55"),
+    LOWEST("LOWEST", "0.5");
+
+    /** The factor as the card shows it: `0.55x`. */
+    val factor: String get() = "${scale}x"
 
     companion object {
         fun forScale(scale: String?): ResolutionLevel? = entries.firstOrNull { GameResolution.sameScale(it.scale, scale) }

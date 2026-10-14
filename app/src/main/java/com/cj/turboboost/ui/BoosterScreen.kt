@@ -357,14 +357,16 @@ private fun GameResolutionRow(
 
     Text("RENDER RESOLUTION", color = Tac.TextLo, fontSize = 10.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Black)
     Spacer(Modifier.height(8.dp))
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        val options = listOf<Pair<String, ResolutionLevel?>>("DEFAULT" to null) + ResolutionLevel.entries.map { it.label to it }
-        options.forEach { (label, level) ->
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        val options = listOf<Triple<String, String?, ResolutionLevel?>>(Triple("DEFAULT", null, null)) +
+            ResolutionLevel.entries.map { Triple(it.label, it.factor, it) }
+        options.forEach { (label, factor, level) ->
             ResolutionChip(
                 label = label,
+                factor = factor,
                 selected = reason == null && status?.level == level,
                 enabled = usable,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).fillMaxHeight(),
                 onClick = { onPick(level) }
             )
         }
@@ -417,6 +419,13 @@ private fun GameResolutionRow(
         fontSize = 11.sp,
         lineHeight = 16.sp
     )
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "Lower factors cut GPU work but look softer; the effect depends on the game's own render cap, so check the measured line.",
+        color = Tac.TextLo,
+        fontSize = 11.sp,
+        lineHeight = 16.sp
+    )
 }
 
 @Composable
@@ -436,6 +445,7 @@ private fun ResolutionAction(label: String, enabled: Boolean, onClick: () -> Uni
 @Composable
 private fun ResolutionChip(
     label: String,
+    factor: String?,
     selected: Boolean,
     enabled: Boolean,
     modifier: Modifier = Modifier,
@@ -446,13 +456,17 @@ private fun ResolutionChip(
             .heightIn(min = 40.dp)
             .alpha(if (enabled) 1f else 0.5f)
             .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
-            .semantics { contentDescription = "$label${if (selected) ", selected" else ""}" },
+            .semantics { contentDescription = "$label${factor?.let { " $it" }.orEmpty()}${if (selected) ", selected" else ""}" },
         shape = RoundedCornerShape(10.dp),
         color = if (selected) Tac.Cyan.copy(alpha = 0.12f) else Color.Transparent,
         border = BorderStroke(1.dp, if (selected) Tac.Cyan else Tac.Line)
     ) {
         Box(Modifier.padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
-            Text(label, color = if (selected) Tac.Cyan else Tac.TextLo, fontSize = 10.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+            val tint = if (selected) Tac.Cyan else Tac.TextLo
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(label, color = tint, fontSize = 10.sp, fontWeight = FontWeight.Black, fontFamily = Mono, maxLines = 1)
+                factor?.let { Text(it, color = tint, fontSize = 10.sp, fontFamily = Mono, maxLines = 1) }
+            }
         }
     }
 }

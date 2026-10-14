@@ -20,7 +20,11 @@ private class GameShell(
     val isGame: Boolean = true,
     var pid: String? = null,
     var measureFile: String? = null,
-    var bootId: String = "boot-1"
+    var bootId: String = "boot-1",
+    /** `set --downscale` values the shell refuses, as AOSP does for text that is not a float. */
+    val rejects: Set<String> = emptySet(),
+    /** Exits 0 but stores this scale instead of the one asked for. */
+    val storesInstead: String? = null
 ) : ShellExecutor {
 
     val commands = mutableListOf<String>()
@@ -67,7 +71,8 @@ private class GameShell(
             "set" -> {
                 val scale = parts.getOrNull(parts.indexOf("--downscale") + 1)
                 val fps = parts.indexOf("--fps").takeIf { it >= 0 }?.let { parts[it + 1] }
-                configs[4] = (if (scale == "disable") null else scale) to fps
+                if (scale in rejects) return 255 to "Invalid scaling ratio '$scale'"
+                configs[4] = (if (scale == "disable") null else storesInstead ?: scale) to fps
                 mode = "custom"
                 0 to "Set custom mode intervention config for user `0` in game `$pkg` as: `downscaling-ratio: $scale;fps-override: $fps`"
             }
@@ -98,14 +103,28 @@ class GameResolutionTest {
     // --- preset value mapping -----------------------------------------------------------
 
     @Test
-    fun `presets are MEDIUM at 0_65 and LOW at 0_6, labelled by level`() {
-        assertEquals(listOf("MEDIUM", "LOW"), ResolutionLevel.entries.map { it.label })
-        assertEquals(listOf("0.65", "0.6"), ResolutionLevel.entries.map { it.scale })
+    fun `presets run from MEDIUM at 0_65 down to LOWEST at 0_5, keeping the 1_2_0 names`() {
+        assertEquals(listOf("MEDIUM", "LOW", "LOWER", "LOWEST"), ResolutionLevel.entries.map { it.label })
+        assertEquals(listOf("0.65", "0.6", "0.55", "0.5"), ResolutionLevel.entries.map { it.scale })
+        assertEquals(listOf("0.65x", "0.6x", "0.55x", "0.5x"), ResolutionLevel.entries.map { it.factor })
         assertEquals(ResolutionLevel.LOW, ResolutionLevel.forScale("0.60"))
         assertEquals(ResolutionLevel.MEDIUM, ResolutionLevel.forScale("0.65"))
+        assertEquals(ResolutionLevel.LOWER, ResolutionLevel.forScale("0.55"))
+        assertEquals(ResolutionLevel.LOWEST, ResolutionLevel.forScale("0.50"))
         assertNull(ResolutionLevel.forScale("0.83"))
         assertNull(ResolutionLevel.forScale(null))
         assertFalse(ResolutionLevel.entries.any { it.label.contains('%') })
+        // Nothing offered goes below 0.5.
+        assertTrue(ResolutionLevel.entries.all { it.scale.toFloat() >= 0.5f })
+    }
+
+    @Test
+    fun `scales compare as numbers`() {
+        assertTrue(GameResolution.sameScale("0.5", "0.50"))
+        assertTrue(GameResolution.sameScale("0.55", "0.550"))
+        assertFalse(GameResolution.sameScale("0.5", "0.55"))
+        assertFalse(GameResolution.sameScale("0.5", null))
+        assertFalse(GameResolution.sameScale("0.5", "disable"))
     }
 
     @Test
@@ -502,6 +521,187 @@ class GameResolutionTest {
         assertEquals(record, SessionRecord.decode(record.encode()))
         // Written by the removed display lever.
         assertEquals("900x2050@400", SessionRecord.decode(record.copy(renderResolution = "900x2050@400").encode())!!.renderResolution)
+    }
+
+    // --- the 0.55 and 0.5 presets -------------------------------------------------------------
+
+    private val lowFactors = listOf(ResolutionLevel.LOWER, ResolutionLevel.LOWEST)
+
+    @Test
+    fun `LOWER and LOWEST send their exact value and round-trip to the game's default`() {
+        for (level in lowFactors) {
+            val shell = GameShell(uncapped)
+            val store = FakeStore()
+
+            val applied = GameResolution.apply(shell, store, uncapped, level, null)
+            assertTrue("$level: ${applied.detail}", applied.ok)
+            assertEquals(listOf("cmd game set --downscale ${level.scale} $uncapped"), shell.writes)
+            assertEquals(level.scale to null, shell.configs[4])
+            assertEquals(level.scale, GameResolution.applied(store, uncapped))
+            assertEquals(level, GameResolution.status(shell, store, uncapped).level)
+
+            shell.commands.clear()
+            val restored = GameResolution.restore(shell, store, uncapped, force = false, runningPid = null)
+            assertTrue("$level: ${restored.detail}", restored.ok)
+            assertEquals(listOf("cmd game reset $uncapped", "cmd game mode standard $uncapped"), shell.writes)
+            assertEquals("standard", shell.mode)
+            assertTrue(shell.configs.isEmpty())
+            assertNull(GameResolution.snapshot(store, uncapped))
+            assertNull(GameResolution.applied(store, uncapped))
+        }
+    }
+
+    @Test
+    fun `LOWER and LOWEST put a game's own custom config back`() {
+        for (level in lowFactors) {
+            val shell = cappedShell()
+            val store = FakeStore()
+            assertTrue(GameResolution.apply(shell, store, capped, level, null).ok)
+            assertEquals(level.scale to null, shell.configs[4])
+
+            shell.commands.clear()
+            assertTrue(GameResolution.restore(shell, store, capped, force = false, runningPid = null).ok)
+            assertEquals(
+                listOf("cmd game set --downscale 0.7 --fps 90 $capped", "cmd game mode performance $capped"),
+                shell.writes
+            )
+            assertEquals("0.7" to "90", shell.configs[4])
+            assertEquals("performance", shell.mode)
+        }
+    }
+
+    @Test
+    fun `switching LOWER to MEDIUM to DEFAULT keeps the original snapshot`() {
+        val shell = cappedShell()
+        val store = FakeStore()
+
+        assertTrue(GameResolution.apply(shell, store, capped, ResolutionLevel.LOWER, null).ok)
+        val first = GameResolution.snapshot(store, capped)!!
+        assertTrue(GameResolution.apply(shell, store, capped, ResolutionLevel.MEDIUM, null).ok)
+        assertEquals("0.65", GameResolution.applied(store, capped))
+        assertEquals(first, GameResolution.snapshot(store, capped))
+        assertEquals(InterventionConfig("0.7", "90"), first.custom)
+        assertEquals("performance", first.mode)
+
+        assertTrue(GameResolution.restore(shell, store, capped, force = false, runningPid = null).ok)
+        assertEquals("performance", shell.mode)
+        assertEquals("0.7" to "90", shell.configs[4])
+        assertEquals("0.8" to "60", shell.configs[2])
+        assertNull(GameResolution.snapshot(store, capped))
+    }
+
+    @Test
+    fun `a value the shell rejects is a failure that leaves the game and the store untouched`() {
+        val shell = GameShell(uncapped, rejects = setOf("0.5"))
+        val store = FakeStore()
+
+        val result = GameResolution.apply(shell, store, uncapped, ResolutionLevel.LOWEST, null)
+
+        assertFalse(result.ok)
+        assertTrue(result.detail, result.detail.contains("Downscale not applied"))
+        assertTrue(result.detail, result.detail.contains("Invalid scaling ratio '0.5'"))
+        assertEquals("standard", shell.mode)
+        assertTrue(shell.configs.isEmpty())
+        assertNull(GameResolution.applied(store, uncapped))
+        assertNull(GameResolution.snapshot(store, uncapped))
+        assertNull(GameResolution.status(shell, store, uncapped).level)
+    }
+
+    @Test
+    fun `a value that is accepted but read back differently is a failure`() {
+        val shell = GameShell(uncapped, storesInstead = "0.6")
+        val store = FakeStore()
+
+        val result = GameResolution.apply(shell, store, uncapped, ResolutionLevel.LOWEST, null)
+
+        assertFalse(result.ok)
+        assertTrue(result.detail, result.detail.contains("Downscale not applied"))
+        assertNull(GameResolution.applied(store, uncapped))
+    }
+
+    @Test
+    fun `a rejected switch keeps the preset already held`() {
+        val shell = GameShell(uncapped, rejects = setOf("0.5"))
+        val store = FakeStore()
+        assertTrue(GameResolution.apply(shell, store, uncapped, ResolutionLevel.LOWER, null).ok)
+
+        assertFalse(GameResolution.apply(shell, store, uncapped, ResolutionLevel.LOWEST, null).ok)
+
+        assertEquals("0.55", GameResolution.applied(store, uncapped))
+        assertEquals(ResolutionLevel.LOWER, GameResolution.status(shell, store, uncapped).level)
+        assertTrue(GameResolution.restore(shell, store, uncapped, force = false, runningPid = null).ok)
+    }
+
+    @Test
+    fun `LOWEST changed outside the app is refused until confirmed`() {
+        val shell = cappedShell()
+        val store = FakeStore()
+        assertTrue(GameResolution.apply(shell, store, capped, ResolutionLevel.LOWEST, null).ok)
+        shell.mode = "standard"
+        shell.commands.clear()
+
+        val refused = GameResolution.restore(shell, store, capped, force = false, runningPid = null)
+        assertFalse(refused.ok)
+        assertTrue(refused.changedOutside)
+        assertTrue(shell.writes.isEmpty())
+        assertEquals("standard", GameResolution.status(shell, store, capped).changedOutside)
+
+        val forced = GameResolution.restore(shell, store, capped, force = true, runningPid = null)
+        assertTrue(forced.detail, forced.ok)
+        assertEquals("performance", shell.mode)
+        assertEquals("0.7" to "90", shell.configs[4])
+    }
+
+    @Test
+    fun `a restart at LOWER is set again before launch, like the older presets`() {
+        val shell = GameShell(uncapped)
+        val store = FakeStore()
+        assertTrue(GameResolution.apply(shell, store, uncapped, ResolutionLevel.LOWER, null).ok)
+        shell.bootId = "boot-2"
+        shell.mode = "standard"
+
+        val status = GameResolution.status(shell, store, uncapped)
+        assertTrue(status.resetByRestart)
+        assertEquals(ResolutionLevel.LOWER, status.level)
+        assertNull(status.changedOutside)
+
+        shell.commands.clear()
+        assertTrue(GameResolution.reapplyBeforeLaunch(shell, store, uncapped)!!.ok)
+        assertEquals(listOf("cmd game mode custom $uncapped"), shell.writes)
+        assertEquals("0.55" to null, shell.configs[4])
+        assertEquals("LOWER 0.55", GameResolution.sessionValue(store, uncapped))
+    }
+
+    @Test
+    fun `levels stored by 1_2_0 still load, by scale not by name`() {
+        // What 1.2.0 left in the store: the applied scale, as the preset sent it.
+        for ((stored, expected) in listOf("0.65" to ResolutionLevel.MEDIUM, "0.6" to ResolutionLevel.LOW)) {
+            val shell = GameShell(uncapped, mode = "custom", configs = mutableMapOf(4 to (stored to null)))
+            val store = FakeStore()
+            store.putString("applied_$uncapped", stored)
+            store.putString("snap_mode_$uncapped", "standard")
+            store.putString("snap_custom_$uncapped", "none")
+            store.putBoolean("snap_any_$uncapped", false)
+
+            val status = GameResolution.status(shell, store, uncapped)
+            assertEquals(expected, status.level)
+            assertNull(status.changedOutside)
+            assertEquals("${expected.label} $stored", GameResolution.sessionValue(store, uncapped))
+
+            assertTrue(GameResolution.restore(shell, store, uncapped, force = false, runningPid = null).ok)
+            assertEquals("standard", shell.mode)
+        }
+    }
+
+    @Test
+    fun `result line for sizes measured at the new factors`() {
+        val native = BufferSize(720, 1640)
+        assertEquals("Renders at 594x1353 (−32% pixels)", GameResolution.resultText(native, BufferSize(594, 1353)))
+        assertEquals("Renders at 540x1230 (−44% pixels)", GameResolution.resultText(native, BufferSize(540, 1230)))
+        // Same size as native: the game's cap sits below the preset.
+        assertEquals("No effect: game already renders below this", GameResolution.resultText(native, BufferSize(720, 1640)))
+        // Measured only; nothing is estimated from the factor.
+        assertNull(GameResolution.resultText(native, null))
     }
 
     // --- shell watcher -----------------------------------------------------------------------
