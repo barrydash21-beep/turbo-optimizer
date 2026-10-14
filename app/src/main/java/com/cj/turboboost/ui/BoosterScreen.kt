@@ -354,6 +354,21 @@ private fun GameResolutionRow(
         else -> status.unavailableReason
     }
     val usable = enabled && reason == null && ui?.busy != true
+    /** The chip waiting for confirmation, by level name; [DEFAULT_CHOICE] for DEFAULT. */
+    var pendingChoice by rememberSaveable { mutableStateOf<String?>(null) }
+
+    pendingChoice?.let { choice ->
+        val level = ResolutionLevel.entries.firstOrNull { it.name == choice }
+        ResolutionConfirmDialog(
+            gameLabel = gameLabel,
+            level = level,
+            onConfirm = {
+                pendingChoice = null
+                onPick(level)
+            },
+            onDismiss = { pendingChoice = null }
+        )
+    }
 
     Text("RENDER RESOLUTION", color = Tac.TextLo, fontSize = 10.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Black)
     Spacer(Modifier.height(8.dp))
@@ -361,13 +376,15 @@ private fun GameResolutionRow(
         val options = listOf<Triple<String, String?, ResolutionLevel?>>(Triple("DEFAULT", null, null)) +
             ResolutionLevel.entries.map { Triple(it.label, it.factor, it) }
         options.forEach { (label, factor, level) ->
+            val isSelected = reason == null && status?.level == level
             ResolutionChip(
                 label = label,
                 factor = factor,
-                selected = reason == null && status?.level == level,
+                selected = isSelected,
                 enabled = usable,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
-                onClick = { onPick(level) }
+                // Nothing changes until the dialog is confirmed; the selected chip asks nothing.
+                onClick = { if (!isSelected) pendingChoice = level?.name ?: DEFAULT_CHOICE }
             )
         }
     }
@@ -469,6 +486,45 @@ private fun ResolutionChip(
             }
         }
     }
+}
+
+private const val DEFAULT_CHOICE = "DEFAULT"
+
+/** A resolution chip changes the game's mode: asked every time, never applied on tap. */
+@Composable
+private fun ResolutionConfirmDialog(
+    gameLabel: String,
+    level: ResolutionLevel?,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val title = level?.let { "SET ${it.label} ${it.factor}?" } ?: "RESTORE DEFAULT?"
+    val body = if (level == null) {
+        "Puts back the game mode and settings $gameLabel had before Turbo changed them."
+    } else {
+        "Sets the ${level.factor} downscale factor for $gameLabel through Android's game mode. " +
+            "Lower can look softer. It takes effect the next time $gameLabel opens, and the card then shows the size it actually renders at."
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Tac.Surface,
+        title = {
+            Text(title, color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+        },
+        text = {
+            Text(body, color = Tac.TextLo, fontSize = 12.sp, lineHeight = 17.sp)
+        },
+        confirmButton = {
+            Button(onClick = onConfirm, colors = ButtonDefaults.buttonColors(containerColor = Tac.Cyan), shape = RoundedCornerShape(10.dp)) {
+                Text(if (level == null) "RESTORE" else "APPLY", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            }
+        }
+    )
 }
 
 /** "Restart now" closes the game: asked every time, never done on its own. */
