@@ -45,6 +45,12 @@ object Stores {
     /** Separate from the snapshot: restoreSystemState clears that whole file on success. */
     fun tuner(context: Context) = SharedPrefsStore(context, "booster_tuner")
 
+    /**
+     * Background restriction: each restricted package's pre-session state. Separate from the
+     * snapshot for the same reason as [tuner].
+     */
+    fun restrictions(context: Context) = SharedPrefsStore(context, "booster_restrictions")
+
     /** Session diagnostics: the last 20 sessions. */
     fun sessions(context: Context) = SharedPrefsStore(context, "booster_sessions")
 

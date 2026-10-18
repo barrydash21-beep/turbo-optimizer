@@ -61,6 +61,28 @@ object AppPackages {
         pkg in PROTECTED || pkg in runtime || PROTECTED_NAME_PARTS.any { pkg.contains(it, ignoreCase = true) }
 
     /**
+     * The background restriction list until the user edits it. Only the installed ones that
+     * are not protected are used: on a TECNO LJ6 (POVA 7, HiOS 16.3.0) on 2026-10-18 all six
+     * were installed, and Google Messages was the default SMS app, so it was left alone.
+     * katana and services are system apps there, so the RAM purge never stopped them.
+     */
+    val RESTRICT_DEFAULTS = listOf(
+        "com.facebook.katana",
+        "com.facebook.lite",
+        "com.facebook.orca",
+        "com.facebook.services",
+        "com.instagram.android",
+        "com.google.android.apps.messaging"
+    )
+
+    /**
+     * HiOS AIService, offered as an optional restriction entry only when installed. Found on
+     * the same device: /system_ext/priv-app/AppService, shared uid android.uid.system, bound
+     * by system_server, so it is a system service and may be restarted straight away.
+     */
+    const val HIOS_AI_SERVICE = "com.transsion.kolun.aiservice"
+
+    /**
      * Apps always exempted from the traffic blocker, on top of the user's games.
      *
      * Facebook is deliberately absent: the RAM purge force-stops it, so exempting it from
