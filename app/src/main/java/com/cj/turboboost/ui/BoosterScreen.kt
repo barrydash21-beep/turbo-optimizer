@@ -46,6 +46,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import com.cj.turboboost.AppPackages
+import com.cj.turboboost.BackgroundRestrictor
 import com.cj.turboboost.BoostProfile
 import com.cj.turboboost.DisplayState
 import com.cj.turboboost.GameRegistry
@@ -55,6 +57,7 @@ import com.cj.turboboost.LaunchableApp
 import com.cj.turboboost.RamInfo
 import com.cj.turboboost.RefreshRate
 import com.cj.turboboost.ResolutionLevel
+import com.cj.turboboost.RestrictEditorUi
 import com.cj.turboboost.SessionRecord
 import com.cj.turboboost.SystemTelemetry
 import com.cj.turboboost.VpnState
@@ -148,7 +151,17 @@ fun BoosterScreen(
     onRestartGame: (String) -> Unit,
     displayOverride: DisplayState?,
     onResetDisplayOverride: () -> Unit,
-    onKeepDisplayOverride: () -> Unit
+    onKeepDisplayOverride: () -> Unit,
+    restrictEnabled: Boolean,
+    restrictShown: List<String>,
+    restrictEditor: RestrictEditorUi?,
+    restrictOutcomes: Map<String, String>,
+    onRestrictEnabledChange: (Boolean) -> Unit,
+    onOpenRestrictEditor: () -> Unit,
+    onCloseRestrictEditor: () -> Unit,
+    onAddRestricted: (String) -> Unit,
+    onRemoveRestricted: (String) -> Unit,
+    onResetRestricted: () -> Unit
 ) {
     val context = LocalContext.current
     val busy = step != BoostStep.IDLE
@@ -263,9 +276,12 @@ fun BoosterScreen(
             OptionsModule(
                 profile = profile,
                 vpnEnabled = vpnEnabled,
+                restrictEnabled = restrictEnabled,
                 enabled = !busy,
                 onProfileChange = onProfileChange,
-                onVpnEnabledChange = onVpnEnabledChange
+                onVpnEnabledChange = onVpnEnabledChange,
+                onRestrictEnabledChange = onRestrictEnabledChange,
+                onEditRestricted = onOpenRestrictEditor
             )
 
             Spacer(Modifier.height(14.dp))
@@ -299,6 +315,18 @@ fun BoosterScreen(
 
         if (pickerOpen) {
             AppPickerDialog(apps = pickerApps, onPick = onAddGame, onDismiss = onClosePicker)
+        }
+
+        if (restrictEditor != null) {
+            RestrictListDialog(
+                shown = restrictShown,
+                editor = restrictEditor,
+                outcomes = restrictOutcomes,
+                onAdd = onAddRestricted,
+                onRemove = onRemoveRestricted,
+                onReset = onResetRestricted,
+                onDismiss = onCloseRestrictEditor
+            )
         }
 
         if (summary != null) {
@@ -598,9 +626,12 @@ private fun DisplayOverrideDialog(state: DisplayState, onReset: () -> Unit, onKe
 private fun OptionsModule(
     profile: BoostProfile,
     vpnEnabled: Boolean,
+    restrictEnabled: Boolean,
     enabled: Boolean,
     onProfileChange: (BoostProfile) -> Unit,
-    onVpnEnabledChange: (Boolean) -> Unit
+    onVpnEnabledChange: (Boolean) -> Unit,
+    onRestrictEnabledChange: (Boolean) -> Unit,
+    onEditRestricted: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.5f),
@@ -688,15 +719,210 @@ private fun OptionsModule(
                     checked = vpnEnabled,
                     onCheckedChange = onVpnEnabledChange,
                     enabled = enabled,
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Tac.Bg,
-                        checkedTrackColor = Tac.Cyan,
-                        uncheckedThumbColor = Tac.TextLo,
-                        uncheckedTrackColor = Tac.SurfaceElevated,
-                        uncheckedBorderColor = Tac.Line
-                    )
+                    colors = optionSwitchColors()
                 )
             }
+
+            Spacer(Modifier.height(12.dp))
+            HorizontalDivider(color = Tac.Line, thickness = 1.dp)
+            Spacer(Modifier.height(12.dp))
+
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "RESTRICT BACKGROUND APPS",
+                        color = Tac.TextHi,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = Mono
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        if (restrictEnabled) {
+                            "During the session, the apps on your list can't run in the background. " +
+                                "Put back as they were when the game closes."
+                        } else {
+                            "Left untouched"
+                        },
+                        color = Tac.TextLo,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp
+                    )
+                    TextButton(
+                        onClick = onEditRestricted,
+                        enabled = enabled,
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text("EDIT LIST", color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                    }
+                }
+                Switch(
+                    modifier = Modifier.semantics { contentDescription = "Restrict background apps during session" },
+                    checked = restrictEnabled,
+                    onCheckedChange = onRestrictEnabledChange,
+                    enabled = enabled,
+                    colors = optionSwitchColors()
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun optionSwitchColors() = SwitchDefaults.colors(
+    checkedThumbColor = Tac.Bg,
+    checkedTrackColor = Tac.Cyan,
+    uncheckedThumbColor = Tac.TextLo,
+    uncheckedTrackColor = Tac.SurfaceElevated,
+    uncheckedBorderColor = Tac.Line
+)
+
+/**
+ * The background restriction list. Removing works any time; adding needs Shizuku, since only
+ * it can say what is installed and what is protected, and a protected app is never accepted.
+ */
+@Composable
+private fun RestrictListDialog(
+    shown: List<String>,
+    editor: RestrictEditorUi,
+    outcomes: Map<String, String>,
+    onAdd: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onReset: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val installed = editor.installed
+    val protected = editor.protected
+    var query by rememberSaveable { mutableStateOf("") }
+    // A package added or removed: start the next one from an empty field.
+    LaunchedEffect(shown) { query = "" }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Tac.Surface,
+        title = {
+            Text("BACKGROUND APPS", color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+        },
+        text = {
+            Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+                Text(
+                    "Kept from running in the background during a session, then put back exactly as they were. " +
+                        "This app, Shizuku, the game, your launcher, keyboard, SMS app and dialer, system UI and " +
+                        "Play services are protected and never restricted.",
+                    color = Tac.TextLo,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
+                Spacer(Modifier.height(12.dp))
+
+                if (shown.isEmpty()) Text("No apps on the list.", color = Tac.TextLo, fontSize = 12.sp)
+                shown.forEach { pkg ->
+                    val status = when {
+                        installed != null && pkg !in installed -> "not installed"
+                        protected != null && AppPackages.isProtected(pkg, protected) -> "protected, never restricted"
+                        else -> outcomes[pkg]
+                    }
+                    RestrictRow(
+                        title = GameRegistry.labelFor(context, pkg) ?: pkg,
+                        packageName = pkg,
+                        status = status,
+                        action = "REMOVE",
+                        onAction = { onRemove(pkg) }
+                    )
+                }
+
+                if (installed != null && AppPackages.HIOS_AI_SERVICE in installed && AppPackages.HIOS_AI_SERVICE !in shown) {
+                    RestrictRow(
+                        title = "Optional: HiOS AIService",
+                        packageName = AppPackages.HIOS_AI_SERVICE,
+                        status = "A HiOS system service. HiOS may start it again right away.",
+                        action = "ADD",
+                        onAction = { onAdd(AppPackages.HIOS_AI_SERVICE) }
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+                when {
+                    editor.loading -> Text("Checking installed apps...", color = Tac.TextLo, fontSize = 12.sp)
+                    installed != null -> {
+                        OutlinedTextField(
+                            value = query,
+                            onValueChange = { query = it.trim() },
+                            label = { Text("Package name", fontSize = 11.sp) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = LocalTextStyle.current.copy(fontSize = 12.sp, fontFamily = Mono),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Tac.TextHi,
+                                unfocusedTextColor = Tac.TextHi,
+                                focusedBorderColor = Tac.Cyan,
+                                unfocusedBorderColor = Tac.Line,
+                                focusedLabelColor = Tac.Cyan,
+                                unfocusedLabelColor = Tac.TextLo,
+                                cursorColor = Tac.Cyan
+                            )
+                        )
+                        // Matching installed apps that could be added, so names need not be typed in full.
+                        if (query.length >= 2) {
+                            installed
+                                .filter { it.contains(query, ignoreCase = true) && it !in shown }
+                                .filter { protected == null || !AppPackages.isProtected(it, protected) }
+                                .sorted()
+                                .take(5)
+                                .forEach { match ->
+                                    Text(
+                                        match,
+                                        color = Tac.TextHi,
+                                        fontSize = 12.sp,
+                                        fontFamily = Mono,
+                                        modifier = Modifier.fillMaxWidth().clickable { onAdd(match) }.padding(vertical = 6.dp)
+                                    )
+                                }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = { onAdd(query) },
+                            enabled = query.isNotEmpty(),
+                            colors = ButtonDefaults.buttonColors(containerColor = Tac.Cyan),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("ADD", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+                        }
+                    }
+                }
+                editor.note?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = Tac.Amber, fontSize = 12.sp, lineHeight = 17.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CLOSE", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onReset) {
+                Text("DEFAULTS", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            }
+        }
+    )
+}
+
+@Composable
+private fun RestrictRow(title: String, packageName: String, status: String?, action: String, onAction: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Tac.TextHi, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            if (title != packageName) Text(packageName, color = Tac.TextLo, fontSize = 11.sp, fontFamily = Mono)
+            if (status != null) Text(status, color = Tac.TextLo, fontSize = 11.sp, lineHeight = 15.sp)
+        }
+        TextButton(onClick = onAction) {
+            Text(action, color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
         }
     }
 }
@@ -1067,6 +1293,8 @@ private fun SessionSummary(
                     } ?: "unavailable"
                 )
                 SummaryRow("Render resolution", renderResolutionText(record.renderResolution))
+                AliveRow("Restricted apps alive at ${BackgroundRestrictor.ALIVE_CHECK_DELAY_MS / 1000} s", record.restrictedAliveEarly)
+                AliveRow("Restricted apps alive at end", record.restrictedAliveAtEnd)
                 SummaryRow("Duration", durationText(record.durationMs))
                 SummaryRow("Average FPS", fpsText(record.avgFps))
                 SummaryRow("1% low FPS", fpsText(record.onePercentLowFps))
@@ -1122,6 +1350,19 @@ private fun SummaryRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Text(label, modifier = Modifier.weight(1f), color = Tac.TextLo, fontSize = 12.sp)
         Text(value, color = Tac.TextHi, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = Mono)
+    }
+}
+
+/** Null is "not checked" (restriction off, or unreadable); empty is "none"; packages go one per line. */
+@Composable
+private fun AliveRow(label: String, packages: List<String>?) {
+    if (packages.isNullOrEmpty()) {
+        SummaryRow(label, if (packages == null) "not checked" else "none")
+        return
+    }
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Text(label, color = Tac.TextLo, fontSize = 12.sp)
+        packages.forEach { Text(it, color = Tac.TextHi, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = Mono) }
     }
 }
 

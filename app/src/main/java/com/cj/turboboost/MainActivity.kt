@@ -149,7 +149,17 @@ class MainActivity : ComponentActivity() {
                     onRestartGame = { viewModel.restartGame(it) },
                     displayOverride = viewModel.displayOverride,
                     onResetDisplayOverride = { viewModel.resetDisplayOverride() },
-                    onKeepDisplayOverride = { viewModel.keepDisplayOverride() }
+                    onKeepDisplayOverride = { viewModel.keepDisplayOverride() },
+                    restrictEnabled = viewModel.restrictEnabled,
+                    restrictShown = viewModel.restrictShown(),
+                    restrictEditor = viewModel.restrictEditor,
+                    restrictOutcomes = viewModel.restrictOutcomes,
+                    onRestrictEnabledChange = { viewModel.setRestrictionEnabled(it) },
+                    onOpenRestrictEditor = { viewModel.openRestrictEditor() },
+                    onCloseRestrictEditor = { viewModel.closeRestrictEditor() },
+                    onAddRestricted = { viewModel.addRestricted(it) },
+                    onRemoveRestricted = { viewModel.removeRestricted(it) },
+                    onResetRestricted = { viewModel.resetRestricted() }
                 )
             }
         }
