@@ -25,8 +25,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * Watches for the selected game to exit, then puts the gaming tweaks back and stops itself.
- * While the game runs it also samples thermal status and FPS for the session summary.
+ * Watches for the selected game to exit, then puts the gaming tweaks and the background
+ * restriction back and stops itself. While the game runs it also samples thermal status and
+ * FPS for the session summary, and records which restricted apps are alive
+ * [BackgroundRestrictor.ALIVE_CHECK_DELAY_MS] after it starts and when the game exits.
  *
  * Polls `pidof <package>` through Shizuku every [POLL_MS]. A game needs a few seconds to
  * appear after launch, so nothing is reverted until it has been seen running once (or
@@ -35,7 +37,8 @@ import kotlinx.coroutines.launch
  * Sticky: the package and rate are persisted at start, so if the system kills and restarts
  * the process mid-game the monitor picks the session back up. Samples taken before such a
  * restart are lost; the summary covers what was measured after it. If the service does not
- * come back, the next app start reverts the tweaks from the persisted `tweaks_active` flag.
+ * come back, the next app start reverts the tweaks from the persisted `tweaks_active` flag, and the
+ * restriction from its own persisted state.
  */
 class GameMonitorService : Service() {
 
@@ -61,6 +64,13 @@ class GameMonitorService : Service() {
         /** Consecutive polls without Shizuku before giving up and leaving revert to app start. */
         const val MAX_UNAVAILABLE_POLLS = 6
 
+        /**
+         * How late the early live-process check may run and still count. HiOS freezes a
+         * backgrounded app even with this service in the foreground (seen on HiOS 16.3), and
+         * the check then runs only when it thaws, minutes later.
+         */
+        const val ALIVE_CHECK_TOLERANCE_MS = 10_000L
+
         private val _running = MutableStateFlow(false)
 
         /** Observable form of [isRunning], so an open screen can tell when a session ends. */
@@ -85,6 +95,11 @@ class GameMonitorService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
+    private var aliveJob: Job? = null
+
+    /** The early live-process check, kept until the session is saved. */
+    @Volatile
+    private var aliveEarly: List<String>? = null
 
     /** The session being measured, held in memory only until the game exits. */
     @Volatile
@@ -105,21 +120,40 @@ class GameMonitorService : Service() {
             ?: store.getString(KEY_RATE)?.toFloatOrNull()
         // Before any early exit: a startForegroundService() caller must see startForeground().
         goForeground(gamePackage)
-        if (gamePackage == null || rate == null || !PerformanceTuner.isActive(store)) {
+        val restrictions = Stores.restrictions(applicationContext)
+        val active = PerformanceTuner.isActive(store) || BackgroundRestrictor.isActive(restrictions)
+        if (gamePackage == null || rate == null || !active) {
             finish()
             return START_NOT_STICKY
         }
 
         _running.value = true
         job?.cancel()
+        aliveJob?.cancel()
         // A new boost replaces a session still running: keep what that one measured.
         saveSession()
+        aliveEarly = null
         job = scope.launch { watch(gamePackage, rate) }
+        if (BackgroundRestrictor.isActive(restrictions)) {
+            aliveJob = scope.launch {
+                val due = SystemClock.elapsedRealtime() + BackgroundRestrictor.ALIVE_CHECK_DELAY_MS
+                delay(BackgroundRestrictor.ALIVE_CHECK_DELAY_MS)
+                val lateMs = SystemClock.elapsedRealtime() - due
+                if (lateMs > ALIVE_CHECK_TOLERANCE_MS) {
+                    // Not the value at that time, so it is left unchecked rather than mislabelled.
+                    Log.w(TAG, "Restricted apps check ran ${lateMs / 1000} s late (process frozen?) - not recorded")
+                    return@launch
+                }
+                aliveEarly = BackgroundRestrictor.alive(RamCleaner.shell, restrictions)
+                Log.i(TAG, "Restricted apps alive after ${BackgroundRestrictor.ALIVE_CHECK_DELAY_MS / 1000} s: ${aliveEarly ?: "unreadable"}")
+            }
+        }
         return START_STICKY
     }
 
     private suspend fun watch(gamePackage: String, rate: Float) {
         val store = Stores.tuner(applicationContext)
+        val restrictions = Stores.restrictions(applicationContext)
         val sampler = SessionSampler(RamCleaner.shell, gamePackage)
         var waitedMs = 0L
         var unavailablePolls = 0
@@ -155,9 +189,13 @@ class GameMonitorService : Service() {
                     unavailablePolls = 0
                     if (session != null || waitedMs >= LAUNCH_GRACE_MS) {
                         Log.d(TAG, "$gamePackage is gone - reverting gaming tweaks")
+                        // Before the restore: afterwards the packages are free to run again.
+                        session?.restrictedAliveAtEnd = BackgroundRestrictor.alive(RamCleaner.shell, restrictions)
                         saveSession()
                         val report = PerformanceTuner.revertGamingTweaks(store)
-                        if (report.failed.isEmpty() && !report.unavailable) {
+                        val restored = BackgroundRestrictor.restore(RamCleaner.shell, restrictions)
+                        Log.i(TAG, "Background apps restored: " + restored.packages.joinToString("; ") { "${it.packageName} ${it.detail()}" })
+                        if (report.failed.isEmpty() && !report.unavailable && restored.ok) {
                             finish()
                             return
                         }
@@ -184,6 +222,7 @@ class GameMonitorService : Service() {
     private fun saveSession() {
         val done = session ?: return
         session = null
+        if (done.restrictedAliveEarly == null) done.restrictedAliveEarly = aliveEarly
         val record = done.finish(SystemClock.elapsedRealtime())
         Log.i(TAG, "Session saved: ${record.encode()}")
         SessionStore(Stores.sessions(applicationContext)).save(record)
@@ -224,7 +263,7 @@ class GameMonitorService : Service() {
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("Gaming tweaks active")
-            .setContentText("Display settings are restored when $gameName closes.")
+            .setContentText("Your settings are restored when $gameName closes.")
             .setOngoing(true)
             .setContentIntent(open)
             .build()

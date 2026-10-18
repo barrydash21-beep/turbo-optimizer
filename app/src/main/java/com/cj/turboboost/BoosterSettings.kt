@@ -87,6 +87,23 @@ class BoosterPrefs(private val store: KeyValueStore) {
             value.filter { GameRegistry.isValidPackageName(it) }.distinct().joinToString(",")
         )
 
+    /** Whether a session restricts [restrictedApps] in the background until it ends. */
+    var restrictBackground: Boolean
+        get() = store.getBoolean(KEY_RESTRICT, true)
+        set(value) = store.putBoolean(KEY_RESTRICT, value)
+
+    /**
+     * Packages restricted during a session, or null while the user has never edited the list
+     * ([AppPackages.RESTRICT_DEFAULTS] then applies). An emptied list stays empty.
+     */
+    var restrictedApps: List<String>?
+        get() = store.getString(KEY_RESTRICT_LIST)
+            ?.split(',')?.map { it.trim() }?.filter { GameRegistry.isValidPackageName(it) }?.distinct()
+        set(value) = store.putString(
+            KEY_RESTRICT_LIST,
+            value?.filter { GameRegistry.isValidPackageName(it) }?.distinct()?.joinToString(",")
+        )
+
     /** Package of the game the user picked, or null before the first pick. */
     var selectedGame: String?
         get() = store.getString(KEY_GAME)
@@ -104,6 +121,8 @@ class BoosterPrefs(private val store: KeyValueStore) {
         const val KEY_VPN = "vpn_enabled"
         const val KEY_GAME = "selected_game"
         const val KEY_GAMES = "games"
+        const val KEY_RESTRICT = "restrict_background"
+        const val KEY_RESTRICT_LIST = "restricted_apps"
         const val PREFIX_RATE = "rate_"
     }
 }

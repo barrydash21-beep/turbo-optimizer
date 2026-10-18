@@ -52,6 +52,17 @@ data class GameResolutionUi(
     val note: String? = null
 )
 
+/** The background restriction list editor, while it is open. */
+data class RestrictEditorUi(
+    /** Installed packages; null while loading or without Shizuku. */
+    val installed: Set<String>? = null,
+    /** Never restrictable: the fixed set plus the launcher, keyboard, SMS app and dialer. */
+    val protected: Set<String>? = null,
+    val loading: Boolean = true,
+    /** Why the last add was refused, or why adding is unavailable. */
+    val note: String? = null
+)
+
 /** A launchable app offered in the "add a game" picker. */
 data class LaunchableApp(
     val packageName: String,
@@ -92,6 +103,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = BoosterPrefs(app)
     private val snapshot: KeyValueStore = Stores.snapshot(app)
     private val tunerStore: KeyValueStore = Stores.tuner(app)
+    private val restrictionStore: KeyValueStore = Stores.restrictions(app)
     private val sessions = SessionStore(Stores.sessions(app))
     private val optionsStore: KeyValueStore = Stores.options(app)
     private val resolutionStore: KeyValueStore = Stores.gameResolution(app)
@@ -104,6 +116,20 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     var profile by mutableStateOf(prefs.profile)
         private set
     var vpnEnabled by mutableStateOf(prefs.vpnEnabled)
+        private set
+    var restrictEnabled by mutableStateOf(prefs.restrictBackground)
+        private set
+
+    /** The user's restriction list, or null while it has never been edited (defaults apply). */
+    var restrictList by mutableStateOf(prefs.restrictedApps)
+        private set
+
+    /** The list editor, or null while it is closed. */
+    var restrictEditor by mutableStateOf<RestrictEditorUi?>(null)
+        private set
+
+    /** Per package: what the last restrict or restore did, for the editor's rows. */
+    var restrictOutcomes by mutableStateOf<Map<String, String>>(emptyMap())
         private set
     var shizukuState by mutableStateOf(ShizukuState.OFFLINE)
         private set
@@ -332,6 +358,88 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         if (!enabled && NetworkBlockerVpnService.isRunning.value) stopVpn()
     }
 
+    /** Off leaves every package alone from the next boost; a session already held still restores. */
+    fun setRestrictionEnabled(enabled: Boolean) {
+        restrictEnabled = enabled
+        prefs.restrictBackground = enabled
+    }
+
+    // -----------------------------------------------------------------------
+    // Background restriction list
+    // -----------------------------------------------------------------------
+
+    /**
+     * The list a session restricts, as the editor shows it: the user's own, or else the
+     * installed defaults that are not protected (all defaults until Shizuku has answered).
+     */
+    fun restrictShown(): List<String> {
+        restrictList?.let { return it }
+        val editor = restrictEditor
+        if (editor?.installed != null && editor.protected != null) {
+            return BackgroundRestrictor.defaultsFor(editor.installed, editor.protected)
+        }
+        return AppPackages.RESTRICT_DEFAULTS
+    }
+
+    /** Reads what is installed and what is protected, which adding needs. */
+    fun openRestrictEditor() {
+        restrictEditor = RestrictEditorUi()
+        viewModelScope.launch {
+            val loaded = withContext(Dispatchers.IO) {
+                val shell = RamCleaner.shell
+                if (!shell.isAvailable()) {
+                    null
+                } else {
+                    RamCleaner.parsePackageList(shell.capture("pm list packages")) to
+                        RamCleaner.protectedPackages(shell, null)
+                }
+            }
+            val editor = restrictEditor ?: return@launch
+            val installed = loaded?.first
+            val protected = loaded?.second
+            restrictEditor = if (installed == null || protected == null) {
+                editor.copy(loading = false, note = "Connect Shizuku to add apps: it checks which are installed and protected")
+            } else {
+                editor.copy(installed = installed, protected = protected, loading = false)
+            }
+        }
+    }
+
+    fun closeRestrictEditor() {
+        restrictEditor = null
+    }
+
+    /** Adds [raw] to the list unless it is protected, not installed or not a package name. */
+    fun addRestricted(raw: String) {
+        val editor = restrictEditor ?: return
+        val pkg = raw.trim()
+        val installed = editor.installed
+        val protected = editor.protected
+        val refusal = when {
+            !GameRegistry.isValidPackageName(pkg) -> "\"$pkg\" is not a package name"
+            installed == null || protected == null -> "Connect Shizuku to add apps"
+            AppPackages.isProtected(pkg, protected) -> "$pkg is protected and is never restricted"
+            pkg !in installed -> "$pkg is not installed"
+            else -> null
+        }
+        if (refusal == null) saveRestricted(restrictShown() + pkg)
+        restrictEditor = editor.copy(note = refusal)
+    }
+
+    fun removeRestricted(pkg: String) = saveRestricted(restrictShown() - pkg)
+
+    /** Back to the installed defaults. */
+    fun resetRestricted() {
+        restrictList = null
+        prefs.restrictedApps = null
+    }
+
+    private fun saveRestricted(list: List<String>) {
+        val kept = list.distinct()
+        restrictList = kept
+        prefs.restrictedApps = kept
+    }
+
     // -----------------------------------------------------------------------
     // Shizuku
     // -----------------------------------------------------------------------
@@ -464,8 +572,9 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * The whole pipeline, in order: (a) kill background apps, (b) apply the tweaks, (c) start
-     * the exit monitor, (d) launch the game. Shizuku work runs on IO, the launch on Main.
+     * The whole pipeline, in order: (a) restrict the background list, then kill background
+     * apps, (b) apply the tweaks, (c) start the exit monitor, (d) launch the game. Shizuku work
+     * runs on IO, the launch on Main.
      */
     private fun executeBoostAndLaunch(game: GameProfile, rate: Float) {
         val app = getApplication<Application>()
@@ -474,6 +583,8 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 step = BoostStep.CLEANING
                 val active = profile
+                // Off: no package state is read or changed by the restriction at all.
+                val restrictCandidates = if (restrictEnabled) restrictList ?: AppPackages.RESTRICT_DEFAULTS else null
 
                 if (shizukuState == ShizukuState.READY) {
                     // A phone restart puts the game back in standard mode; set its preset again first.
@@ -487,16 +598,25 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     reapplied?.let { _events.send(BoostEvent.ShowToast(it.detail)) }
                     val outcome = withTimeoutOrNull(BOOST_TIMEOUT_MS) {
                         withContext(Dispatchers.IO) {
-                            // (a) + the profile's extras; the kill runs first inside it. A render
+                            // (a) Before the kill, so nothing it stops is started again by an
+                            // app it has not reached yet. Saves each package's state itself.
+                            val restricted = restrictCandidates?.let {
+                                BackgroundRestrictor.restrict(RamCleaner.shell, restrictionStore, it, gamePackage)
+                            }
+                            // + the profile's extras; the kill runs first inside it. A render
                             // resolution preset lives in the game's custom mode: keep that mode.
                             val keepMode = GameResolution.applied(resolutionStore, gamePackage) != null
                             val report = RamCleaner.applyProfile(active, gamePackage, snapshot, keepGameMode = keepMode)
                             // (b) The per-game rate and power mode. Saves the originals itself.
-                            report to PerformanceTuner.applyGamingTweaks(tunerStore, game, rate)
+                            Triple(report, PerformanceTuner.applyGamingTweaks(tunerStore, game, rate), restricted)
                         }
                     }
                     val report = outcome?.first
                     val tune = outcome?.second
+                    outcome?.third?.let { restricted ->
+                        restrictOutcomes = restricted.packages.associate { it.packageName to it.detail() }
+                        _events.send(BoostEvent.ShowToast(restricted.restrictSummary()))
+                    }
                     val stopped = report?.let { stoppedText(it) }
                     when {
                         report == null ->
@@ -511,7 +631,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     }
 
                     // (c) Whatever happened above, if tweaks are on something must undo them.
-                    if (PerformanceTuner.isActive(tunerStore)) {
+                    if (PerformanceTuner.isActive(tunerStore) || BackgroundRestrictor.isActive(restrictionStore)) {
                         try {
                             GameMonitorService.start(app, gamePackage, rate)
                         } catch (e: Exception) {
@@ -521,7 +641,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                 } else {
-                    _events.send(BoostEvent.ShowToast("Shizuku not ready - system tuning skipped"))
+                    _events.send(BoostEvent.ShowToast("Shizuku not ready - system tuning and background restriction skipped"))
                     delay(400)
                 }
 
@@ -789,7 +909,11 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     val system = RamCleaner.restoreSystemState(snapshot)
                     // Refresh rate and fixed performance mode: the user's exact saved values.
                     val tune = PerformanceTuner.revertGamingTweaks(tunerStore)
-                    if (tune.failed.isEmpty()) system else system.copy(failed = system.failed + tune.failed)
+                    // Each restricted package's own saved op mode and bucket.
+                    val restricted = BackgroundRestrictor.restore(RamCleaner.shell, restrictionStore)
+                    withContext(Dispatchers.Main) { noteRestored(restricted) }
+                    val failed = tune.failed + restricted.failedPackages.map { "Background app $it" }
+                    if (failed.isEmpty()) system else system.copy(failed = system.failed + failed)
                 }
             }
             _events.send(
@@ -798,9 +922,16 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun noteRestored(report: RestrictionReport) {
+        if (report.packages.isNotEmpty()) {
+            restrictOutcomes = restrictOutcomes + report.packages.associate { it.packageName to "restore: ${it.detail()}" }
+        }
+    }
+
     /**
-     * On app start: if the tweaks are still marked active and no monitor is watching a live
-     * game, the app or game crashed or the phone rebooted mid-session, so put things back.
+     * On app start: if the tweaks or the background restriction are still marked active and
+     * no monitor is watching a live game, the app or game crashed or the phone rebooted
+     * mid-session, so put things back.
      * The monitor runs in this process, so it is only ever "running" for a genuine session.
      *
      * Shizuku can take a few seconds to bind after launch, so this waits for it.
@@ -810,19 +941,22 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         staleRevertStarted = true
         viewModelScope.launch {
             repeat(STALE_REVERT_ATTEMPTS) {
-                val stale = withContext(Dispatchers.IO) {
-                    PerformanceTuner.isActive(tunerStore) && !GameMonitorService.isRunning
+                val (tweaks, restrictions) = withContext(Dispatchers.IO) {
+                    PerformanceTuner.isActive(tunerStore) to BackgroundRestrictor.isActive(restrictionStore)
                 }
-                if (!stale) return@launch
-                val tune = withContext(Dispatchers.IO) {
+                if (!(tweaks || restrictions) || GameMonitorService.isRunning) return@launch
+                val result = withContext(Dispatchers.IO) {
                     if (shizukuState == ShizukuState.READY || RamCleaner.shell.isAvailable()) {
-                        PerformanceTuner.revertGamingTweaks(tunerStore)
+                        PerformanceTuner.revertGamingTweaks(tunerStore) to
+                            BackgroundRestrictor.restore(RamCleaner.shell, restrictionStore)
                     } else {
                         null
                     }
                 }
-                if (tune != null && tune.ok) {
-                    _events.send(BoostEvent.ShowToast("Restored your original display settings"))
+                result?.second?.let { noteRestored(it) }
+                if (result != null && result.first.ok && result.second.ok) {
+                    val what = listOfNotNull("display settings".takeIf { tweaks }, "background apps".takeIf { restrictions })
+                    _events.send(BoostEvent.ShowToast("Restored your original ${what.joinToString(" and ")}"))
                     return@launch
                 }
                 delay(2000)

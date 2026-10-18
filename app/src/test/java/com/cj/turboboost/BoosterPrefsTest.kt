@@ -91,4 +91,27 @@ class BoosterPrefsTest {
         assertEquals(listOf("com.example.game", "com.example.othergame"), BoosterPrefs(store).games)
         assertFalse(BoosterPrefs(FakeStore()).games.any { it.isBlank() })
     }
+
+    @Test
+    fun `background restriction defaults on and round trips`() {
+        val prefs = BoosterPrefs(FakeStore())
+        assertTrue(prefs.restrictBackground)
+        prefs.restrictBackground = false
+        assertFalse(prefs.restrictBackground)
+    }
+
+    @Test
+    fun `the restriction list is unset until edited, and an emptied list stays empty`() {
+        val store = FakeStore()
+        assertEquals(null, BoosterPrefs(store).restrictedApps)
+
+        BoosterPrefs(store).restrictedApps = listOf("com.example.social", "not a package", "com.example.social", "com.example.chat")
+        assertEquals(listOf("com.example.social", "com.example.chat"), BoosterPrefs(store).restrictedApps)
+
+        BoosterPrefs(store).restrictedApps = emptyList()
+        assertEquals(emptyList<String>(), BoosterPrefs(store).restrictedApps)
+
+        BoosterPrefs(store).restrictedApps = null
+        assertEquals(null, BoosterPrefs(store).restrictedApps)
+    }
 }
