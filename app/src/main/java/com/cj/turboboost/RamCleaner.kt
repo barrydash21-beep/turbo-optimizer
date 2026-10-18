@@ -144,6 +144,20 @@ object RamCleaner {
     private fun runtimeKillTargets(selectedGame: String): List<String>? {
         val thirdParty = parsePackageList(shell.capture("pm list packages -3")) ?: return null
         val running = parseProcessNames(shell.capture("ps -A -o NAME")) ?: return null
+        return selectKillTargets(
+            running = running,
+            thirdParty = thirdParty,
+            bloat = AppPackages.TRANSSION_BLOAT.toSet(),
+            protected = protectedPackages(shell, selectedGame) ?: return null
+        )
+    }
+
+    /**
+     * [AppPackages.PROTECTED] plus [selectedGame] and what is resolved at runtime: the current
+     * launcher, keyboard, SMS app and dialer. Null when the launcher or keyboard cannot be
+     * resolved, since nothing can then be stopped or restricted safely.
+     */
+    internal fun protectedPackages(shell: ShellExecutor, selectedGame: String?): Set<String>? {
         val launcher = parseComponentPackage(
             lastLine(
                 shell.capture(
@@ -162,12 +176,7 @@ object RamCleaner {
             parseRoleHolders(shell.capture("cmd role get-role-holders $role"))
         }
 
-        return selectKillTargets(
-            running = running,
-            thirdParty = thirdParty,
-            bloat = AppPackages.TRANSSION_BLOAT.toSet(),
-            protected = AppPackages.PROTECTED.toSet() + selectedGame + launcher + keyboard + roleHolders
-        )
+        return AppPackages.PROTECTED.toSet() + listOfNotNull(selectedGame) + launcher + keyboard + roleHolders
     }
 
     private val PROTECTED_ROLES = listOf("android.app.role.SMS", "android.app.role.DIALER")
@@ -188,9 +197,7 @@ object RamCleaner {
         protected: Set<String>
     ): List<String> = running
         .filter { it in thirdParty || it in bloat }
-        .filter { pkg ->
-            pkg !in protected && AppPackages.PROTECTED_NAME_PARTS.none { pkg.contains(it, ignoreCase = true) }
-        }
+        .filter { pkg -> !AppPackages.isProtected(pkg, protected) }
         .sorted()
 
     /** `package:com.foo` lines; null when there is nothing to parse. */

@@ -45,12 +45,20 @@ object AppPackages {
     val PROTECTED = listOf(
         BuildConfig.APPLICATION_ID,
         SHIZUKU,
+        "com.android.systemui",
         "com.google.android.gms",
         "com.google.android.gsf"
     )
 
     /** A package whose name contains any of these is never force-stopped. */
     val PROTECTED_NAME_PARTS = listOf("systemui", "phone", "telephony", "bluetooth", "inputmethod")
+
+    /**
+     * True when [pkg] must never be stopped or restricted: in [PROTECTED] or [runtime] (the
+     * session's game, launcher, keyboard, SMS app and dialer), or named like a core component.
+     */
+    fun isProtected(pkg: String, runtime: Set<String>): Boolean =
+        pkg in PROTECTED || pkg in runtime || PROTECTED_NAME_PARTS.any { pkg.contains(it, ignoreCase = true) }
 
     /**
      * Apps always exempted from the traffic blocker, on top of the user's games.
