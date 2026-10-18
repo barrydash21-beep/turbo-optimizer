@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.3] - 2026-10-18
 
 ### Added
 - Restrict background apps during a session (on by default, under the profile options). While the game runs, the apps on the list are kept from running in the background, then put back exactly as they were when it closes, on RESTORE, or on the next app start if the app was closed mid-session. It saves each app's background setting and standby bucket first, then restricts and stops them.
