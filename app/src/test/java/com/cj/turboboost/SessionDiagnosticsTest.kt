@@ -232,6 +232,23 @@ class SessionStoreTest {
         // Unavailable FPS alone never triggers a suggestion.
         assertNull(Diagnostics.suggestion(record(1L, avg = null, rate = 120f), supported))
     }
+
+    @Test
+    fun `restricted apps alive round trip, with none and not checked kept apart`() {
+        val checked = record(9L).copy(restrictedAliveEarly = emptyList(), restrictedAliveAtEnd = listOf("com.example.social", "com.example.chat"))
+        assertEquals(checked, SessionRecord.decode(checked.encode()))
+        val notChecked = record(10L)
+        assertNull(SessionRecord.decode(notChecked.encode())!!.restrictedAliveEarly)
+        assertNull(SessionRecord.decode(notChecked.encode())!!.restrictedAliveAtEnd)
+    }
+
+    @Test
+    fun `records saved before the restriction fields existed still decode`() {
+        val old = SessionRecord.decode("com.example.game|90.0|1790745039682|748041|43.28|3.10|248072|1|24|23|24|90.0|default")
+        assertEquals("default", old!!.renderResolution)
+        assertNull(old.restrictedAliveEarly)
+        assertNull(old.restrictedAliveAtEnd)
+    }
 }
 
 class SessionSamplerTest {
@@ -276,4 +293,5 @@ class SessionSamplerTest {
         assertFalse(shell.ran("dumpsys SurfaceFlinger --latency"))
         assertNull(acc.finish(30_000L).avgFps)
     }
+
 }

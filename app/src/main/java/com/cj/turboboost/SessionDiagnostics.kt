@@ -36,7 +36,14 @@ data class SessionRecord(
      * ([GameResolution.sessionValue]). Older records hold the removed display override,
      * `900x2050@400` or `native`. Null if recorded before this existed.
      */
-    val renderResolution: String? = null
+    val renderResolution: String? = null,
+    /**
+     * Restricted background packages with a live process [BackgroundRestrictor.ALIVE_CHECK_DELAY_MS]
+     * after session start, and when the game exited. Empty is "none alive"; null is "not
+     * checked" (restriction off, Shizuku down, or a record from before this existed).
+     */
+    val restrictedAliveEarly: List<String>? = null,
+    val restrictedAliveAtEnd: List<String>? = null
 ) {
     /** Average FPS is more than 15% below the chosen rate, or the device reached "moderate". */
     val struggled: Boolean
@@ -45,12 +52,13 @@ data class SessionRecord(
     fun encode(): String = listOf(
         packageName, RefreshRate.format(refreshRate), startedAtMs, durationMs,
         avgFps?.let { fmt(it) }, onePercentLowFps?.let { fmt(it) }, msToThermal1, maxThermal,
-        samples, fpsSamples, thermalSamples, observedPeak?.let { RefreshRate.format(it) }, renderResolution
+        samples, fpsSamples, thermalSamples, observedPeak?.let { RefreshRate.format(it) }, renderResolution,
+        encodeList(restrictedAliveEarly), encodeList(restrictedAliveAtEnd)
     ).joinToString(SEP) { it?.toString() ?: "" }
 
     companion object {
         private const val SEP = "|"
-        private const val FIELDS = 13
+        private const val FIELDS = 15
 
         /** Records saved before [observedPeak] existed. */
         private const val FIELDS_V1 = 11
@@ -58,12 +66,26 @@ data class SessionRecord(
         /** Records saved before [renderResolution] existed. */
         private const val FIELDS_V2 = 12
 
+        /** Records saved before [restrictedAliveEarly] and [restrictedAliveAtEnd] existed. */
+        private const val FIELDS_V3 = 13
+
+        /** Written for an empty list, so it stays apart from null (an empty field). */
+        private const val NONE = "-"
+
+        private fun encodeList(list: List<String>?): String? = list?.joinToString(",")?.ifEmpty { NONE }
+
+        private fun decodeList(field: String?): List<String>? = when {
+            field.isNullOrBlank() -> null
+            field == NONE -> emptyList()
+            else -> field.split(',').filter { it.isNotBlank() }
+        }
+
         private fun fmt(v: Float) = String.format(Locale.US, "%.2f", v)
 
         /** Null for a line that is not a complete record. */
         fun decode(line: String): SessionRecord? {
             val f = line.split(SEP)
-            if ((f.size != FIELDS && f.size != FIELDS_V2 && f.size != FIELDS_V1) || f[0].isBlank()) return null
+            if (f.size !in setOf(FIELDS, FIELDS_V3, FIELDS_V2, FIELDS_V1) || f[0].isBlank()) return null
             return runCatching {
                 SessionRecord(
                     packageName = f[0],
@@ -78,7 +100,9 @@ data class SessionRecord(
                     fpsSamples = f[9].toInt(),
                     thermalSamples = f[10].toInt(),
                     observedPeak = f.getOrNull(11)?.toFloatOrNull(),
-                    renderResolution = f.getOrNull(12)?.takeIf { it.isNotBlank() }
+                    renderResolution = f.getOrNull(12)?.takeIf { it.isNotBlank() },
+                    restrictedAliveEarly = decodeList(f.getOrNull(13)),
+                    restrictedAliveAtEnd = decodeList(f.getOrNull(14))
                 )
             }.getOrNull()
         }
@@ -222,6 +246,10 @@ class SessionAccumulator(
     /** Set once by the monitor when the session starts; see [SessionRecord.renderResolution]. */
     var renderResolution: String? = null
 
+    /** Set by the monitor; see [SessionRecord.restrictedAliveEarly]. */
+    var restrictedAliveEarly: List<String>? = null
+    var restrictedAliveAtEnd: List<String>? = null
+
     /** The newest frame already counted, so the next latency dump is read from after it. */
     val lastPresent: Long get() = lastPresentNs
 
@@ -254,7 +282,9 @@ class SessionAccumulator(
         fpsSamples = fpsSamples,
         thermalSamples = thermalSamples,
         observedPeak = observedPeak,
-        renderResolution = renderResolution
+        renderResolution = renderResolution,
+        restrictedAliveEarly = restrictedAliveEarly,
+        restrictedAliveAtEnd = restrictedAliveAtEnd
     )
 }
 
