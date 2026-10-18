@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Restrict background apps during a session (on by default, under the profile options). While the game runs, the apps on the list are kept from running in the background, then put back exactly as they were when it closes, on RESTORE, or on the next app start if the app was closed mid-session. It saves each app's background setting and standby bucket first, then restricts and stops them.
+- An editable list of those apps. It starts with the installed ones among Facebook, Facebook Lite, Messenger, Facebook Services, Instagram and Google Messages. This app, Shizuku, the game, the launcher, keyboard, SMS app and dialer, system UI and Play services are protected and can't be added. On HiOS, AIService is offered as an optional entry when it is installed.
+- The session summary shows which restricted apps were still running 30 seconds after the session started and when the game closed.
+
+### Notes
+- Some phones ignore the standby bucket change for apps they exempt from battery optimization (seen on HiOS 16 for most of the default list). The list shows this per app; the background restriction and the stop still apply.
+
 ## [1.2.2] - 2026-10-14
 
 ### Changed

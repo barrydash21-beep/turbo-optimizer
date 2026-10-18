@@ -53,6 +53,7 @@ Turbo Optimizer implements Android's native `VpnService` API strictly as an **on
 | Optimization Step | System Command / Mechanism | Profiles Applied |
 |---|---|---|
 | **Background Memory Optimization** | Reclaims cached RAM via standard `am force-stop` for non-essential third-party apps. | All Profiles |
+| **Background App Restriction** | Saves, then sets each listed app's `RUN_ANY_IN_BACKGROUND` app op to `ignore` and its standby bucket to `restricted` (`cmd appops`, `am set-standby-bucket`) before `am force-stop`; restores both when the session ends. | Opt-out |
 | **System Performance Mode** | Applies Android's native power mode (`cmd game mode`) on supported Android 12+ devices. | All Profiles |
 | **Window Animation Scaling** | Sets window and transition animation duration scales to `0.0` for immediate UI response. | Balanced, Turbo |
 | **Display Refresh Rate Lock** | Locks display refresh rate to hardware-supported limits (60/90/120 Hz) via system display settings. | All Profiles |
