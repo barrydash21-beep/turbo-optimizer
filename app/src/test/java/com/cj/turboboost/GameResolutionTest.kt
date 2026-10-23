@@ -24,7 +24,9 @@ private class GameShell(
     /** `set --downscale` values the shell refuses, as AOSP does for text that is not a float. */
     val rejects: Set<String> = emptySet(),
     /** Exits 0 but stores this scale instead of the one asked for. */
-    val storesInstead: String? = null
+    val storesInstead: String? = null,
+    /** Exits 0 but keeps no frame-rate cap. */
+    val dropsFps: Boolean = false
 ) : ShellExecutor {
 
     val commands = mutableListOf<String>()
@@ -69,10 +71,18 @@ private class GameShell(
                 } + "}]"
             }
             "set" -> {
-                val scale = parts.getOrNull(parts.indexOf("--downscale") + 1)
+                // As recorded on the Pova 7: no --downscale keeps the scaling, no --fps clears
+                // the cap, `disable` reads back as -1.0, and --fps takes any integer.
+                val scale = parts.indexOf("--downscale").takeIf { it >= 0 }?.let { parts[it + 1] }
                 val fps = parts.indexOf("--fps").takeIf { it >= 0 }?.let { parts[it + 1] }
                 if (scale in rejects) return 255 to "Invalid scaling ratio '$scale'"
-                configs[4] = (if (scale == "disable") null else storesInstead ?: scale) to fps
+                if (fps != null && fps.toIntOrNull() == null) return 255 to "Invalid frame rate: '$fps'"
+                val stored = when (scale) {
+                    null -> configs[4]?.first
+                    "disable" -> "-1.0"
+                    else -> storesInstead ?: scale
+                }
+                configs[4] = stored to fps?.takeUnless { dropsFps }
                 mode = "custom"
                 0 to "Set custom mode intervention config for user `0` in game `$pkg` as: `downscaling-ratio: $scale;fps-override: $fps`"
             }
@@ -728,6 +738,276 @@ class GameResolutionTest {
         val bad = "x; reboot"
         assertFalse(GameResolution.startWatcher(shell, bad, null, null))
         assertFalse(GameResolution.apply(shell, FakeStore(), bad, ResolutionLevel.LOW, null).ok)
+        assertFalse(GameResolution.apply(shell, FakeStore(), bad, null, FpsCap.FPS_40, null).ok)
         assertTrue(shell.commands.isEmpty())
+    }
+
+    // --- thermal FPS cap ---------------------------------------------------------------------
+
+    private val game = FAKE_GAME
+
+    /** A game with its own configs, as the device showed: performance mode, custom 0.65 without a cap. */
+    private fun configuredShell(customFps: String? = null) = GameShell(
+        game,
+        mode = "performance",
+        available = listOf("standard", "performance", "custom"),
+        configs = mutableMapOf(2 to ("0.8" to "90"), 4 to ("0.65" to customFps))
+    )
+
+    @Test
+    fun `cap values are fixed, below 60, and stored by value`() {
+        assertEquals(listOf(45, 40, 30), FpsCap.entries.map { it.fps })
+        assertTrue(FpsCap.entries.all { it.fps < 60 })
+        assertEquals(FpsCap.FPS_40, FpsCap.forFps("40"))
+        assertEquals(FpsCap.FPS_40, FpsCap.forFps(" 40 "))
+        assertNull(FpsCap.forFps("60"))
+        assertNull(FpsCap.forFps("0"))
+        assertNull(FpsCap.forFps("40; reboot"))
+        assertNull(FpsCap.forFps(null))
+    }
+
+    @Test
+    fun `cap only - scaling is switched off in the same command and the cap is read back`() {
+        val shell = configuredShell()
+        val store = FakeStore()
+
+        val result = GameResolution.apply(shell, store, game, null, FpsCap.FPS_40, null)
+
+        assertTrue(result.detail, result.ok)
+        assertEquals(listOf("cmd game set --downscale disable --fps 40 $game"), shell.writes)
+        assertEquals("custom", shell.mode)
+        assertEquals("-1.0" to "40", shell.configs[4])
+        assertNull(GameResolution.applied(store, game))
+        assertEquals(FpsCap.FPS_40, GameResolution.appliedFps(store, game))
+        val status = GameResolution.status(shell, store, game)
+        assertEquals(FpsCap.FPS_40, status.cap)
+        assertNull(status.level)
+        assertNull(status.changedOutside)
+    }
+
+    @Test
+    fun `cap plus downscale go in one command`() {
+        val shell = configuredShell()
+        val store = FakeStore()
+
+        assertTrue(GameResolution.apply(shell, store, game, ResolutionLevel.LOWER, FpsCap.FPS_40, null).ok)
+
+        assertEquals(listOf("cmd game set --downscale 0.55 --fps 40 $game"), shell.writes)
+        assertEquals("0.55" to "40", shell.configs[4])
+        assertEquals("0.55", GameResolution.applied(store, game))
+        assertEquals(FpsCap.FPS_40, GameResolution.appliedFps(store, game))
+        assertEquals(40, GameResolution.sessionFpsCap(store, game))
+    }
+
+    @Test
+    fun `changing the scale keeps the cap, changing the cap keeps the scale`() {
+        val shell = configuredShell()
+        val store = FakeStore()
+        assertTrue(GameResolution.apply(shell, store, game, ResolutionLevel.LOWER, FpsCap.FPS_40, null).ok)
+
+        // A resolution chip: the cap held goes along.
+        shell.commands.clear()
+        assertTrue(GameResolution.apply(shell, store, game, ResolutionLevel.LOW, null).ok)
+        assertEquals(listOf("cmd game set --downscale 0.6 --fps 40 $game"), shell.writes)
+        assertEquals("0.6" to "40", shell.configs[4])
+
+        // The cap chips: the preset held goes along; Off leaves --fps out, which clears it.
+        assertTrue(GameResolution.apply(shell, store, game, ResolutionLevel.LOW, FpsCap.FPS_30, null).ok)
+        assertEquals("0.6" to "30", shell.configs[4])
+        shell.commands.clear()
+        assertTrue(GameResolution.apply(shell, store, game, ResolutionLevel.LOW, null, null).ok)
+        assertEquals(listOf("cmd game set --downscale 0.6 $game"), shell.writes)
+        assertEquals("0.6" to null, shell.configs[4])
+        assertNull(GameResolution.appliedFps(store, game))
+        assertEquals("0.6", GameResolution.applied(store, game))
+
+        // The first snapshot is kept through all of it.
+        assertEquals(InterventionConfig("0.65", null), GameResolution.snapshot(store, game)!!.custom)
+    }
+
+    @Test
+    fun `both off is a restore`() {
+        val shell = configuredShell()
+        val store = FakeStore()
+        assertTrue(GameResolution.apply(shell, store, game, null, FpsCap.FPS_45, null).ok)
+
+        shell.commands.clear()
+        assertTrue(GameResolution.apply(shell, store, game, null, null, null).ok)
+        assertEquals(listOf("cmd game set --downscale 0.65 $game", "cmd game mode performance $game"), shell.writes)
+        assertNull(GameResolution.snapshot(store, game))
+        assertNull(GameResolution.appliedFps(store, game))
+    }
+
+    @Test
+    fun `restore puts a pre-existing cap back`() {
+        val shell = configuredShell(customFps = "50")
+        val store = FakeStore()
+        assertTrue(GameResolution.apply(shell, store, game, ResolutionLevel.LOWER, FpsCap.FPS_40, null).ok)
+
+        shell.commands.clear()
+        val restored = GameResolution.restore(shell, store, game, force = false, runningPid = null)
+
+        assertTrue(restored.detail, restored.ok)
+        assertEquals(listOf("cmd game set --downscale 0.65 --fps 50 $game", "cmd game mode performance $game"), shell.writes)
+        assertEquals("0.65" to "50", shell.configs[4])
+        assertEquals("0.8" to "90", shell.configs[2])
+        assertEquals("performance", shell.mode)
+        assertNull(GameResolution.appliedFps(store, game))
+    }
+
+    @Test
+    fun `restore without a pre-existing cap turns the cap off`() {
+        // Custom config without a cap: written back without --fps, which clears ours.
+        val shell = configuredShell()
+        val store = FakeStore()
+        assertTrue(GameResolution.apply(shell, store, game, ResolutionLevel.LOWER, FpsCap.FPS_40, null).ok)
+        shell.commands.clear()
+        assertTrue(GameResolution.restore(shell, store, game, force = false, runningPid = null).ok)
+        assertEquals(listOf("cmd game set --downscale 0.65 $game", "cmd game mode performance $game"), shell.writes)
+        assertEquals("0.65" to null, shell.configs[4])
+
+        // No config at all: reset, which clears the cap with everything else.
+        val bare = GameShell(game)
+        val bareStore = FakeStore()
+        assertTrue(GameResolution.apply(bare, bareStore, game, null, FpsCap.FPS_30, null).ok)
+        bare.commands.clear()
+        assertTrue(GameResolution.restore(bare, bareStore, game, force = false, runningPid = null).ok)
+        assertEquals(listOf("cmd game reset $game", "cmd game mode standard $game"), bare.writes)
+        assertTrue(bare.configs.isEmpty())
+    }
+
+    @Test
+    fun `a restart with a cap set is reset by restart, and the mode switch brings back both values`() {
+        val shell = configuredShell()
+        val store = FakeStore()
+        assertTrue(GameResolution.apply(shell, store, game, ResolutionLevel.LOWER, FpsCap.FPS_40, null).ok)
+        shell.bootId = "boot-2"
+        shell.mode = "standard"
+
+        val status = GameResolution.status(shell, store, game)
+        assertTrue(status.resetByRestart)
+        assertNull(status.changedOutside)
+        assertEquals(FpsCap.FPS_40, status.cap)
+
+        shell.commands.clear()
+        val again = GameResolution.reapplyBeforeLaunch(shell, store, game)!!
+        assertTrue(again.detail, again.ok)
+        assertTrue(again.detail, again.detail.contains("40 FPS cap"))
+        assertEquals(listOf("cmd game mode custom $game"), shell.writes)
+        assertEquals("0.55" to "40", shell.configs[4])
+        assertNull(GameResolution.reapplyBeforeLaunch(shell, store, game))
+    }
+
+    @Test
+    fun `a restart with only a cap set is re-applied too`() {
+        val shell = GameShell(game)
+        val store = FakeStore()
+        assertTrue(GameResolution.apply(shell, store, game, null, FpsCap.FPS_30, null).ok)
+        shell.bootId = "boot-2"
+        shell.mode = "standard"
+
+        assertTrue(GameResolution.status(shell, store, game).resetByRestart)
+        assertTrue(GameResolution.reapplyBeforeLaunch(shell, store, game)!!.ok)
+        assertEquals("custom", shell.mode)
+        assertEquals("-1.0" to "30", shell.configs[4])
+    }
+
+    @Test
+    fun `reset by restart accepts the applied cap and nothing else`() {
+        val standard = { fps: String? ->
+            GameModeState("standard", listOf("standard", "custom"), mapOf(4 to InterventionConfig("0.55", fps)))
+        }
+        assertTrue(GameResolution.isResetByRestart(standard("40"), "0.55", "b1", "b2", "40"))
+        assertFalse(GameResolution.isResetByRestart(standard("60"), "0.55", "b1", "b2", "40"))
+        assertFalse(GameResolution.isResetByRestart(standard(null), "0.55", "b1", "b2", "40"))
+        assertFalse(GameResolution.isResetByRestart(standard("40"), "0.55", "b1", "b2"))
+        assertFalse(GameResolution.isResetByRestart(standard("40"), "0.55", "b1", "b1", "40"))
+    }
+
+    @Test
+    fun `someone else changing the cap is a change made outside, and restore refuses`() {
+        val shell = configuredShell()
+        val store = FakeStore()
+        assertTrue(GameResolution.apply(shell, store, game, ResolutionLevel.LOWER, FpsCap.FPS_40, null).ok)
+        shell.configs[4] = "0.55" to "60"
+
+        assertEquals("custom, scaling 0.55, fps 60", GameResolution.status(shell, store, game).changedOutside)
+        shell.commands.clear()
+        val refused = GameResolution.restore(shell, store, game, force = false, runningPid = null)
+        assertFalse(refused.ok)
+        assertTrue(refused.changedOutside)
+        assertTrue(shell.writes.isEmpty())
+
+        // A cap added outside to a preset held without one counts as well.
+        val other = configuredShell()
+        val otherStore = FakeStore()
+        assertTrue(GameResolution.apply(other, otherStore, game, ResolutionLevel.LOW, null).ok)
+        other.configs[4] = "0.6" to "45"
+        assertEquals("custom, scaling 0.6, fps 45", GameResolution.status(other, otherStore, game).changedOutside)
+    }
+
+    @Test
+    fun `a cap the read-back does not show is never reported as applied`() {
+        val shell = GameShell(game, dropsFps = true)
+        val store = FakeStore()
+
+        val result = GameResolution.apply(shell, store, game, null, FpsCap.FPS_40, null)
+
+        assertFalse(result.ok)
+        assertTrue(result.detail, result.detail.contains("FPS cap not applied"))
+        assertNull(GameResolution.appliedFps(store, game))
+        assertNull(GameResolution.status(shell, store, game).cap)
+    }
+
+    // --- a change the app died during ---------------------------------------------------------
+
+    /** What [GameResolution.apply] has stored just before its `set`, for a game that had no configs. */
+    private fun interruptedStore(pending: String) = FakeStore().apply {
+        putString("snap_custom_$game", "none")
+        putBoolean("snap_any_$game", false)
+        putString("snap_mode_$game", "standard")
+        putString("pending_change_$game", pending)
+    }
+
+    @Test
+    fun `died after the set - the change is recorded as applied`() {
+        val shell = GameShell(game, mode = "custom", configs = mutableMapOf(4 to ("0.55" to "40")))
+        val store = interruptedStore("0.55|40")
+
+        val status = GameResolution.status(shell, store, game)
+
+        assertEquals(ResolutionLevel.LOWER, status.level)
+        assertEquals(FpsCap.FPS_40, status.cap)
+        assertNull(status.changedOutside)
+        assertTrue(GameResolution.restore(shell, store, game, force = false, runningPid = null).ok)
+        assertEquals("standard", shell.mode)
+        assertTrue(shell.configs.isEmpty())
+    }
+
+    @Test
+    fun `died before the set - the leftover snapshot is dropped`() {
+        val shell = GameShell(game)
+        val store = interruptedStore("|40")
+
+        val status = GameResolution.status(shell, store, game)
+
+        assertNull(status.cap)
+        assertNull(status.changedOutside)
+        assertNull(GameResolution.snapshot(store, game))
+        assertTrue(shell.writes.isEmpty())
+    }
+
+    @Test
+    fun `died with something else in place - flagged, restored only when confirmed`() {
+        val shell = GameShell(game, mode = "custom", configs = mutableMapOf(4 to ("0.5" to null)))
+        val store = interruptedStore("0.55|40")
+
+        assertEquals("custom, scaling 0.5", GameResolution.status(shell, store, game).changedOutside)
+        assertTrue(GameResolution.restore(shell, store, game, force = false, runningPid = null).changedOutside)
+
+        assertTrue(GameResolution.restore(shell, store, game, force = true, runningPid = null).ok)
+        assertEquals("standard", shell.mode)
+        assertTrue(shell.configs.isEmpty())
+        assertNull(GameResolution.status(shell, store, game).changedOutside)
     }
 }

@@ -243,6 +243,35 @@ class SessionStoreTest {
     }
 
     @Test
+    fun `the fps cap round trips as field 16, and none stays null`() {
+        val capped = record(11L).copy(renderResolution = "LOWER 0.55", fpsCap = 40)
+        assertEquals(16, capped.encode().split('|').size)
+        assertEquals(capped, SessionRecord.decode(capped.encode()))
+        assertNull(SessionRecord.decode(record(12L).encode())!!.fpsCap)
+    }
+
+    @Test
+    fun `every older record length still decodes, without a cap`() {
+        val base = "com.example.game|90.0|1790745039682|748041|43.28|3.10|248072|1|24|23|24"
+        val lengths = mapOf(
+            11 to base,
+            12 to "$base|90.0",
+            13 to "$base|90.0|default",
+            15 to "$base|90.0|LOW 0.6|-|com.example.chat",
+            16 to "$base|90.0|LOW 0.6|-|com.example.chat|30"
+        )
+        for ((size, line) in lengths) {
+            assertEquals(size, line.split('|').size)
+            val decoded = SessionRecord.decode(line)
+            assertNotNull("$size fields", decoded)
+            assertEquals("$size fields", 43.28f, decoded!!.avgFps!!, 0.001f)
+            assertEquals("$size fields", if (size == 16) 30 else null, decoded.fpsCap)
+        }
+        assertEquals(listOf("com.example.chat"), SessionRecord.decode(lengths.getValue(15))!!.restrictedAliveAtEnd)
+        assertNull(SessionRecord.decode("$base|90.0|default|-"))
+    }
+
+    @Test
     fun `records saved before the restriction fields existed still decode`() {
         val old = SessionRecord.decode("com.example.game|90.0|1790745039682|748041|43.28|3.10|248072|1|24|23|24|90.0|default")
         assertEquals("default", old!!.renderResolution)

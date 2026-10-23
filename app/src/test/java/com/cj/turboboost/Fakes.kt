@@ -1,5 +1,8 @@
 package com.cj.turboboost
 
+/** A neutral package name for tests: no real game. */
+const val FAKE_GAME = "com.example.game"
+
 /** Records every command and answers from a scripted map. No device, no Shizuku. */
 class FakeShell(
     private val available: Boolean = true,
