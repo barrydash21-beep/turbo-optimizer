@@ -970,6 +970,31 @@ class GameResolutionTest {
     }
 
     @Test
+    fun `the snapshot and the pending mark are on disk before the set runs`() {
+        val durable = mutableListOf<String>()
+        val backing = FakeStore()
+        val store = object : KeyValueStore by backing {
+            override fun putStringNow(key: String, value: String?) {
+                durable += key
+                backing.putString(key, value)
+            }
+
+            override fun putBooleanNow(key: String, value: Boolean) {
+                durable += key
+                backing.putBoolean(key, value)
+            }
+        }
+        val shell = GameShell(game)
+
+        assertTrue(GameResolution.apply(shell, store, game, ResolutionLevel.LOWER, FpsCap.FPS_30, null).ok)
+
+        assertEquals(
+            listOf("snap_custom_$game", "snap_any_$game", "snap_mode_$game", "pending_change_$game"),
+            durable
+        )
+    }
+
+    @Test
     fun `died after the set - the change is recorded as applied`() {
         val shell = GameShell(game, mode = "custom", configs = mutableMapOf(4 to ("0.55" to "40")))
         val store = interruptedStore("0.55|40")
