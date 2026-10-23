@@ -145,6 +145,7 @@ class MainActivity : ComponentActivity() {
                     resolutionSupported = viewModel.resolutionSupported,
                     gameResolution = viewModel.gameResolution,
                     onPickResolution = { pkg, level -> viewModel.pickResolution(pkg, level) },
+                    onPickFpsCap = { pkg, cap -> viewModel.pickFpsCap(pkg, cap) },
                     onRestoreResolutionAnyway = { viewModel.restoreResolutionAnyway(it) },
                     onRestartGame = { viewModel.restartGame(it) },
                     displayOverride = viewModel.displayOverride,

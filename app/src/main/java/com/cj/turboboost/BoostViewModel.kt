@@ -49,7 +49,9 @@ data class GameResolutionUi(
     val status: GameResolutionStatus = GameResolutionStatus(),
     val busy: Boolean = false,
     /** Why the last change failed, until the next one. */
-    val note: String? = null
+    val note: String? = null,
+    /** The newest session played under the cap held now that measured an average FPS. */
+    val capSession: SessionRecord? = null
 )
 
 /** The background restriction list editor, while it is open. */
@@ -605,7 +607,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                             }
                             // + the profile's extras; the kill runs first inside it. A render
                             // resolution preset lives in the game's custom mode: keep that mode.
-                            val keepMode = GameResolution.applied(resolutionStore, gamePackage) != null
+                            val keepMode = GameResolution.holds(resolutionStore, gamePackage)
                             val report = RamCleaner.applyProfile(active, gamePackage, snapshot, keepGameMode = keepMode)
                             // (b) The per-game rate and power mode. Saves the originals itself.
                             Triple(report, PerformanceTuner.applyGamingTweaks(tunerStore, game, rate), restricted)
@@ -738,8 +740,9 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
             val found = withContext(Dispatchers.IO) {
                 val shell = RamCleaner.shell
                 if (!shell.isAvailable()) return@withContext null
+                val saved = sessions.all()
                 packages.associateWith { pkg ->
-                    GameResolution.status(shell, resolutionStore, pkg).also { status ->
+                    val read = GameResolution.status(shell, resolutionStore, pkg).also { status ->
                         if (status.unavailableReason == null && GameResolution.needsMeasurement(resolutionStore, pkg)) {
                             GameResolution.startWatcher(
                                 shell,
@@ -749,24 +752,40 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                             )
                         }
                     }
+                    read to read.cap?.let { cap ->
+                        saved.lastOrNull { it.packageName == pkg && it.fpsCap == cap.fps && it.avgFps != null }
+                    }
                 }
             } ?: return@launch
-            gameResolution = found.mapValues { (pkg, status) ->
-                (gameResolution[pkg] ?: GameResolutionUi()).copy(status = status)
+            gameResolution = found.mapValues { (pkg, value) ->
+                (gameResolution[pkg] ?: GameResolutionUi()).copy(status = value.first, capSession = value.second)
             }
         }
     }
 
-    /** A preset picked on [packageName]'s card; null is the game's own default (a restore). */
+    /**
+     * A preset picked on [packageName]'s card; null is the game's own resolution. The cap held
+     * is kept; with none, null is the game's own default (a restore).
+     */
     fun pickResolution(packageName: String, level: ResolutionLevel?) {
         val current = gameResolution[packageName] ?: GameResolutionUi()
         if (level == current.status.level && current.status.changedOutside == null) return
         changeResolution(packageName) { shell, running ->
-            if (level == null) {
-                GameResolution.restore(shell, resolutionStore, packageName, force = false, runningPid = running)
-            } else {
-                GameResolution.apply(shell, resolutionStore, packageName, level, running)
-            }
+            val cap = GameResolution.appliedFps(resolutionStore, packageName)
+            GameResolution.apply(shell, resolutionStore, packageName, level, cap, running)
+        }
+    }
+
+    /**
+     * A frame-rate cap picked on [packageName]'s card; null is no cap. The preset held is
+     * kept; with none, null is the game's own default (a restore).
+     */
+    fun pickFpsCap(packageName: String, cap: FpsCap?) {
+        val current = gameResolution[packageName] ?: GameResolutionUi()
+        if (cap == current.status.cap && current.status.changedOutside == null) return
+        changeResolution(packageName) { shell, running ->
+            val level = ResolutionLevel.forScale(GameResolution.applied(resolutionStore, packageName))
+            GameResolution.apply(shell, resolutionStore, packageName, level, cap, running)
         }
     }
 

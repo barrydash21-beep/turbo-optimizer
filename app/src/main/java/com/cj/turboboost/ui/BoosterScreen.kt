@@ -50,6 +50,7 @@ import com.cj.turboboost.AppPackages
 import com.cj.turboboost.BackgroundRestrictor
 import com.cj.turboboost.BoostProfile
 import com.cj.turboboost.DisplayState
+import com.cj.turboboost.FpsCap
 import com.cj.turboboost.GameRegistry
 import com.cj.turboboost.GameResolutionUi
 import com.cj.turboboost.InstalledGame
@@ -147,6 +148,7 @@ fun BoosterScreen(
     resolutionSupported: Boolean,
     gameResolution: Map<String, GameResolutionUi>,
     onPickResolution: (String, ResolutionLevel?) -> Unit,
+    onPickFpsCap: (String, FpsCap?) -> Unit,
     onRestoreResolutionAnyway: (String) -> Unit,
     onRestartGame: (String) -> Unit,
     displayOverride: DisplayState?,
@@ -254,6 +256,7 @@ fun BoosterScreen(
                 resolution = if (resolutionSupported) gameResolution else null,
                 shizukuReady = shizuku == ShizukuState.READY,
                 onPickResolution = onPickResolution,
+                onPickFpsCap = onPickFpsCap,
                 onRestoreResolutionAnyway = onRestoreResolutionAnyway,
                 onRestartGame = { restartTarget = it }
             )
@@ -390,6 +393,7 @@ private fun GameResolutionRow(
         ResolutionConfirmDialog(
             gameLabel = gameLabel,
             level = level,
+            keptCap = status?.cap,
             onConfirm = {
                 pendingChoice = null
                 onPick(level)
@@ -432,7 +436,7 @@ private fun GameResolutionRow(
         Spacer(Modifier.height(8.dp))
         Text(
             "The phone restarted, so Android put $gameLabel back in its default mode. Turbo sets " +
-                "${status.level?.label ?: "the preset"} again when you launch the game from Turbo.",
+                "${heldText(status.level, status.cap)} again when you launch the game from Turbo.",
             color = Tac.Amber,
             fontSize = 11.sp,
             lineHeight = 16.sp
@@ -470,6 +474,125 @@ private fun GameResolutionRow(
         color = Tac.TextLo,
         fontSize = 11.sp,
         lineHeight = 16.sp
+    )
+}
+
+/**
+ * A game card's frame-rate cap row: OFF plus the caps, and the average FPS the last session at
+ * the cap held actually measured. Shares the resolution row's state, reasons and warnings.
+ */
+@Composable
+private fun FpsCapRow(
+    gameLabel: String,
+    ui: GameResolutionUi?,
+    shizukuReady: Boolean,
+    enabled: Boolean,
+    onPick: (FpsCap?) -> Unit
+) {
+    val status = ui?.status
+    // Why it is off is spelled out once, in the resolution row above.
+    val usable = enabled && shizukuReady && status != null && status.unavailableReason == null && ui?.busy != true
+    /** The chip waiting for confirmation, by cap name; [OFF_CHOICE] for OFF. */
+    var pendingChoice by rememberSaveable { mutableStateOf<String?>(null) }
+
+    pendingChoice?.let { choice ->
+        val cap = FpsCap.entries.firstOrNull { it.name == choice }
+        FpsCapConfirmDialog(
+            gameLabel = gameLabel,
+            cap = cap,
+            keptLevel = status?.level,
+            onConfirm = {
+                pendingChoice = null
+                onPick(cap)
+            },
+            onDismiss = { pendingChoice = null }
+        )
+    }
+
+    Text("THERMAL FPS CAP", color = Tac.TextLo, fontSize = 10.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Black)
+    Spacer(Modifier.height(8.dp))
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        val options = listOf<Pair<String, FpsCap?>>("OFF" to null) + FpsCap.entries.map { it.label to it }
+        options.forEach { (label, cap) ->
+            val isSelected = status != null && status.unavailableReason == null && status.cap == cap
+            ResolutionChip(
+                label = label,
+                factor = cap?.let { "FPS" },
+                selected = isSelected,
+                enabled = usable,
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                onClick = { if (!isSelected) pendingChoice = cap?.name ?: OFF_CHOICE }
+            )
+        }
+    }
+
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "Caps frames to cut heat. Can't raise FPS above the game's own setting. Takes effect on next launch.",
+        color = Tac.TextLo,
+        fontSize = 11.sp,
+        lineHeight = 16.sp
+    )
+    status?.cap?.let { cap ->
+        Spacer(Modifier.height(4.dp))
+        val measured = ui?.capSession?.avgFps
+        Text(
+            measured?.let { "Last session at ${cap.label}: ${fpsText(it)} FPS average" } ?: "Not measured yet",
+            color = Tac.Cyan,
+            fontSize = 11.sp,
+            fontFamily = Mono
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Android reads back Fps ${cap.label} for $gameLabel. That does not prove the game follows it; " +
+                "the measured average after a session does.",
+            color = Tac.TextLo,
+            fontSize = 11.sp,
+            lineHeight = 16.sp
+        )
+    }
+}
+
+private const val OFF_CHOICE = "OFF"
+
+/** A cap chip changes the game's mode like a resolution chip: asked every time, never applied on tap. */
+@Composable
+private fun FpsCapConfirmDialog(
+    gameLabel: String,
+    cap: FpsCap?,
+    /** The preset that stays; OFF without one is a full restore. */
+    keptLevel: ResolutionLevel?,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val title = cap?.let { "SET ${it.label} FPS CAP?" } ?: "TURN FPS CAP OFF?"
+    val body = when {
+        cap != null ->
+            "Caps $gameLabel at ${cap.label} FPS through Android's game mode, to cut heat. It can't raise FPS above " +
+                "the game's own setting, and the game may ignore it. It takes effect the next time $gameLabel opens." +
+                (keptLevel?.let { " The ${it.label} ${it.factor} resolution stays." } ?: "")
+        keptLevel != null -> "Removes the frame-rate cap for $gameLabel. The ${keptLevel.label} ${keptLevel.factor} resolution stays."
+        else -> "Puts back the game mode and settings $gameLabel had before Turbo changed them."
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Tac.Surface,
+        title = {
+            Text(title, color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+        },
+        text = {
+            Text(body, color = Tac.TextLo, fontSize = 12.sp, lineHeight = 17.sp)
+        },
+        confirmButton = {
+            Button(onClick = onConfirm, colors = ButtonDefaults.buttonColors(containerColor = Tac.Cyan), shape = RoundedCornerShape(10.dp)) {
+                Text(if (cap == null) "TURN OFF" else "APPLY", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            }
+        }
     )
 }
 
@@ -518,16 +641,24 @@ private fun ResolutionChip(
 
 private const val DEFAULT_CHOICE = "DEFAULT"
 
+/** `LOW`, `the 40 FPS cap`, `LOW and the 40 FPS cap`, or `the preset`. */
+private fun heldText(level: ResolutionLevel?, cap: FpsCap?): String =
+    listOfNotNull(level?.label, cap?.let { "the ${it.label} FPS cap" }).joinToString(" and ").ifEmpty { "the preset" }
+
 /** A resolution chip changes the game's mode: asked every time, never applied on tap. */
 @Composable
 private fun ResolutionConfirmDialog(
     gameLabel: String,
     level: ResolutionLevel?,
+    /** The cap that stays when the resolution changes; DEFAULT is then not a full restore. */
+    keptCap: FpsCap?,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val title = level?.let { "SET ${it.label} ${it.factor}?" } ?: "RESTORE DEFAULT?"
-    val body = if (level == null) {
+    val body = if (level == null && keptCap != null) {
+        "Turns the downscale off for $gameLabel. The ${keptCap.label} FPS cap stays until you set it to OFF."
+    } else if (level == null) {
         "Puts back the game mode and settings $gameLabel had before Turbo changed them."
     } else {
         "Sets the ${level.factor} downscale factor for $gameLabel through Android's game mode. " +
@@ -991,6 +1122,7 @@ private fun GameSelector(
     resolution: Map<String, GameResolutionUi>?,
     shizukuReady: Boolean,
     onPickResolution: (String, ResolutionLevel?) -> Unit,
+    onPickFpsCap: (String, FpsCap?) -> Unit,
     onRestoreResolutionAnyway: (String) -> Unit,
     onRestartGame: (String) -> Unit
 ) {
@@ -1034,6 +1166,7 @@ private fun GameSelector(
                         resolution = resolution?.get(pkg),
                         shizukuReady = shizukuReady,
                         onPickResolution = { onPickResolution(pkg, it) },
+                        onPickFpsCap = { onPickFpsCap(pkg, it) },
                         onRestoreResolutionAnyway = { onRestoreResolutionAnyway(pkg) },
                         onRestart = { onRestartGame(pkg) }
                     )
@@ -1111,6 +1244,7 @@ private fun GameCard(
     resolution: GameResolutionUi?,
     shizukuReady: Boolean,
     onPickResolution: (ResolutionLevel?) -> Unit,
+    onPickFpsCap: (FpsCap?) -> Unit,
     onRestoreResolutionAnyway: () -> Unit,
     onRestart: () -> Unit
 ) {
@@ -1192,6 +1326,14 @@ private fun GameCard(
                     onPick = onPickResolution,
                     onRestoreAnyway = onRestoreResolutionAnyway,
                     onRestart = onRestart
+                )
+                Spacer(Modifier.height(12.dp))
+                FpsCapRow(
+                    gameLabel = game.label,
+                    ui = resolution,
+                    shizukuReady = shizukuReady,
+                    enabled = enabled,
+                    onPick = onPickFpsCap
                 )
             }
         }
