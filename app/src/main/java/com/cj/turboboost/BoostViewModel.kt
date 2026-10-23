@@ -54,6 +54,13 @@ data class GameResolutionUi(
     val capSession: SessionRecord? = null
 )
 
+/** The diagnostics panel: its rows once checked, and whether a check is running. */
+data class DiagnosticsUi(
+    val rows: List<DiagnosticRow>? = null,
+    val running: Boolean = false,
+    val checkedAt: String? = null
+)
+
 /** The background restriction list editor, while it is open. */
 data class RestrictEditorUi(
     /** Installed packages; null while loading or without Shizuku. */
@@ -168,6 +175,17 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     /** Render resolution state per game package, for its card. */
     var gameResolution by mutableStateOf<Map<String, GameResolutionUi>>(emptyMap())
         private set
+
+    /** The read-only diagnostics panel. */
+    var diagnostics by mutableStateOf(DiagnosticsUi())
+        private set
+
+    /**
+     * Per package, what the system ignored in this process's last restriction, for the
+     * diagnostics panel. Null until a boost restricts; not kept across app restarts.
+     */
+    @Volatile
+    private var restrictIgnored: Map<String, List<String>>? = null
 
     /** A `wm size` / `wm density` override found by this build's one-time check, awaiting an answer. */
     var displayOverride by mutableStateOf<DisplayState?>(null)
@@ -617,6 +635,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     val tune = outcome?.second
                     outcome?.third?.let { restricted ->
                         restrictOutcomes = restricted.packages.associate { it.packageName to it.detail() }
+                        restrictIgnored = restricted.packages.filter { it.skipped == null }.associate { it.packageName to it.ignored }
                         _events.send(BoostEvent.ShowToast(restricted.restrictSummary()))
                     }
                     val stopped = report?.let { stoppedText(it) }
@@ -897,6 +916,77 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     fun keepDisplayOverride() {
         DisplayOverride.markChecked(optionsStore)
         displayOverride = null
+    }
+
+    // -----------------------------------------------------------------------
+    // Diagnostics: read-only
+    // -----------------------------------------------------------------------
+
+    /**
+     * Runs the panel's probes once, on IO: when it opens and on Re-check, never from
+     * recomposition. Reads only; the one write is the card status refresh it reuses.
+     */
+    fun runDiagnostics() {
+        if (diagnostics.running) return
+        diagnostics = diagnostics.copy(running = true)
+        val pkg = selectedGame?.takeIf { GameRegistry.isValidPackageName(it) }
+        viewModelScope.launch {
+            try {
+                shizukuState = probeShizuku()
+                val shizuku = shizukuState
+                val note = pkg?.let { gameResolution[it]?.note }
+                val input = withContext(Dispatchers.IO) { gatherDiagnostics(pkg, shizuku, note) }
+                diagnostics = DiagnosticsUi(
+                    rows = DiagnosticsPanel.rows(input),
+                    checkedAt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+                )
+            } finally {
+                diagnostics = diagnostics.copy(running = false)
+            }
+        }
+    }
+
+    private fun gatherDiagnostics(pkg: String?, shizuku: ShizukuState, note: String?): DiagnosticsInput {
+        val app = getApplication<Application>()
+        val shell = RamCleaner.shell
+        val ready = shell.isAvailable()
+        val version = pkg?.let {
+            runCatching { app.packageManager.getPackageInfo(it, 0).versionName.orEmpty() }.getOrNull()
+        }
+        val probe = ready && resolutionSupported
+        // The card's own status call: reads the game, files a finished measurement, nothing else.
+        val status = if (probe && pkg != null) GameResolution.status(shell, resolutionStore, pkg) else null
+        val capSession = status?.cap?.let { cap ->
+            sessions.all().lastOrNull { it.packageName == pkg && it.fpsCap == cap.fps && it.avgFps != null }
+        }
+        return DiagnosticsInput(
+            androidRelease = Build.VERSION.RELEASE,
+            sdk = Build.VERSION.SDK_INT,
+            manufacturer = Build.MANUFACTURER,
+            model = Build.MODEL,
+            buildDisplay = Build.DISPLAY,
+            shizukuRunning = shizuku != ShizukuState.OFFLINE,
+            shizukuPermission = shizuku == ShizukuState.READY,
+            shellReady = ready,
+            gamePackage = pkg,
+            gameVersion = version,
+            helpOutput = if (ready) DiagnosticsPanel.gameHelp(shell).first else null,
+            read = if (probe && pkg != null) GameResolution.read(shell, pkg) else null,
+            status = status,
+            lastChangeNote = note,
+            capSession = capSession,
+            thermalDump = if (ready) shell.capture("dumpsys thermalservice") else null,
+            restrictIgnored = restrictIgnored
+        )
+    }
+
+    /** The panel as plain text for the clipboard, or null before the first check. */
+    fun diagnosticsReport(): String? {
+        val ui = diagnostics
+        val rows = ui.rows ?: return null
+        val app = getApplication<Application>()
+        val version = runCatching { app.packageManager.getPackageInfo(app.packageName, 0).versionName }.getOrNull() ?: "unknown"
+        return DiagnosticsPanel.report(rows, version, ui.checkedAt ?: "unknown")
     }
 
     // -----------------------------------------------------------------------

@@ -160,7 +160,10 @@ class MainActivity : ComponentActivity() {
                     onCloseRestrictEditor = { viewModel.closeRestrictEditor() },
                     onAddRestricted = { viewModel.addRestricted(it) },
                     onRemoveRestricted = { viewModel.removeRestricted(it) },
-                    onResetRestricted = { viewModel.resetRestricted() }
+                    onResetRestricted = { viewModel.resetRestricted() },
+                    diagnostics = viewModel.diagnostics,
+                    onRunDiagnostics = { viewModel.runDiagnostics() },
+                    diagnosticsReport = { viewModel.diagnosticsReport() }
                 )
             }
         }

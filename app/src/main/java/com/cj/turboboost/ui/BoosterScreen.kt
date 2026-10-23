@@ -1,5 +1,9 @@
 package com.cj.turboboost.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.os.Build
+import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
@@ -49,6 +53,8 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.cj.turboboost.AppPackages
 import com.cj.turboboost.BackgroundRestrictor
 import com.cj.turboboost.BoostProfile
+import com.cj.turboboost.CheckStatus
+import com.cj.turboboost.DiagnosticsUi
 import com.cj.turboboost.DisplayState
 import com.cj.turboboost.FpsCap
 import com.cj.turboboost.GameRegistry
@@ -163,7 +169,10 @@ fun BoosterScreen(
     onCloseRestrictEditor: () -> Unit,
     onAddRestricted: (String) -> Unit,
     onRemoveRestricted: (String) -> Unit,
-    onResetRestricted: () -> Unit
+    onResetRestricted: () -> Unit,
+    diagnostics: DiagnosticsUi,
+    onRunDiagnostics: () -> Unit,
+    diagnosticsReport: () -> String?
 ) {
     val context = LocalContext.current
     val busy = step != BoostStep.IDLE
@@ -312,6 +321,10 @@ fun BoosterScreen(
             // Always reachable: the system changes a boost makes (DND, animation scales,
             // refresh rate) outlive the VPN, so the exit must not be gated on it.
             RestoreButton(enabled = !busy, onClick = onRestore)
+
+            Spacer(Modifier.height(12.dp))
+
+            DiagnosticsSection(ui = diagnostics, onRun = onRunDiagnostics, report = diagnosticsReport)
 
             Spacer(Modifier.height(12.dp))
         }
@@ -1505,6 +1518,107 @@ private fun AliveRow(label: String, packages: List<String>?) {
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Text(label, color = Tac.TextLo, fontSize = 12.sp)
         packages.forEach { Text(it, color = Tac.TextHi, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = Mono) }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics: read-only, probed only when opened or re-checked
+// ---------------------------------------------------------------------------
+
+/** A collapsible section header: the title and SHOW / HIDE. */
+@Composable
+private fun SectionHeader(title: String, expanded: Boolean, onToggle: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(role = Role.Button, onClickLabel = if (expanded) "Hide $title" else "Show $title", onClick = onToggle)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(title, modifier = Modifier.weight(1f), color = Tac.TextLo, fontSize = 10.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Black)
+        Text(if (expanded) "HIDE" else "SHOW", color = Tac.Cyan, fontSize = 10.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+    }
+}
+
+private fun statusColor(status: CheckStatus): Color = when (status) {
+    CheckStatus.SUPPORTED -> Tac.Green
+    CheckStatus.UNSUPPORTED -> Tac.Red
+    CheckStatus.UNVERIFIED -> Tac.Amber
+    CheckStatus.NOT_CHECKED -> Tac.TextLo
+}
+
+/**
+ * What this phone, Shizuku and the selected game support, each with its evidence. Opening it
+ * or RE-CHECK runs the probes once; COPY REPORT copies it as plain text.
+ */
+@Composable
+private fun DiagnosticsSection(ui: DiagnosticsUi, onRun: () -> Unit, report: () -> String?) {
+    val context = LocalContext.current
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = Tac.Surface,
+        border = BorderStroke(1.dp, Tac.Line)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            SectionHeader("DIAGNOSTICS", expanded) {
+                expanded = !expanded
+                if (expanded) onRun()
+            }
+            if (!expanded) return@Column
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Read-only. Supported means a read-back confirmed it. Unverified means the command ran but " +
+                    "nothing confirmed the effect.",
+                color = Tac.TextLo,
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            val rows = ui.rows
+            if (rows == null) {
+                Text(if (ui.running) "Checking..." else "Not checked yet", color = Tac.TextLo, fontSize = 12.sp)
+            } else {
+                rows.forEach { row ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(row.name, modifier = Modifier.weight(1f), color = Tac.TextHi, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                row.status.label.uppercase(Locale.US),
+                                color = statusColor(row.status),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Black,
+                                fontFamily = Mono
+                            )
+                        }
+                        Text(row.evidence, color = Tac.TextLo, fontSize = 11.sp, lineHeight = 15.sp, fontFamily = Mono)
+                    }
+                }
+                ui.checkedAt?.let { Text("Checked $it", color = Tac.TextLo, fontSize = 10.sp, fontFamily = Mono) }
+            }
+            Row {
+                TextButton(onClick = onRun, enabled = !ui.running, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                    Text(if (ui.running) "CHECKING" else "RE-CHECK", color = if (ui.running) Tac.TextLo else Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                }
+                Spacer(Modifier.width(16.dp))
+                TextButton(
+                    onClick = {
+                        val text = report() ?: return@TextButton
+                        val clipboard = context.getSystemService(ClipboardManager::class.java)
+                        clipboard?.setPrimaryClip(ClipData.newPlainText("Turbo diagnostics", text))
+                        // Android 13+ confirms a copy itself.
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                            Toast.makeText(context, "Diagnostics copied", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    enabled = rows != null,
+                    contentPadding = PaddingValues(horizontal = 0.dp)
+                ) {
+                    Text("COPY REPORT", color = if (rows != null) Tac.Cyan else Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                }
+            }
+        }
     }
 }
 
