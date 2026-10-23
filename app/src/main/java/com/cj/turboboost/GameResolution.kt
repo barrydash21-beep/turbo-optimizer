@@ -340,10 +340,11 @@ object GameResolution {
 
     private fun saveSnapshot(store: KeyValueStore, pkg: String, state: GameModeState) {
         val custom = state.custom?.let { "${it.scaling.orEmpty()}|${it.fps.orEmpty()}" } ?: NO_VALUE
-        store.putString(KEY_SNAP_CUSTOM + pkg, custom)
-        store.putBoolean(KEY_SNAP_ANY + pkg, state.configs.isNotEmpty())
+        // On disk before the `set` runs: a process killed right after it must still find them.
+        store.putStringNow(KEY_SNAP_CUSTOM + pkg, custom)
+        store.putBooleanNow(KEY_SNAP_ANY + pkg, state.configs.isNotEmpty())
         // Last: the mode key is what marks a snapshot as present.
-        store.putString(KEY_SNAP_MODE + pkg, state.mode)
+        store.putStringNow(KEY_SNAP_MODE + pkg, state.mode)
     }
 
     private fun clearSnapshot(store: KeyValueStore, pkg: String) {
@@ -494,7 +495,7 @@ object GameResolution {
         if (created) saveSnapshot(store, pkg, before)
         val scale = level?.scale
         val fps = cap?.fps?.toString()
-        store.putString(KEY_PENDING + pkg, "${scale.orEmpty()}|${fps.orEmpty()}")
+        store.putStringNow(KEY_PENDING + pkg, "${scale.orEmpty()}|${fps.orEmpty()}")
 
         val set = runCaptured(shell, setCommand(pkg, level, cap))
         val after = read(shell, pkg).state

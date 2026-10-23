@@ -14,6 +14,12 @@ interface KeyValueStore {
     fun getBoolean(key: String, default: Boolean): Boolean
     fun putBoolean(key: String, value: Boolean)
     fun clear()
+
+    /** Like [putString], but on disk before it returns: for marks that must survive the process dying next. */
+    fun putStringNow(key: String, value: String?) = putString(key, value)
+
+    /** Like [putBoolean], but on disk before it returns. */
+    fun putBooleanNow(key: String, value: Boolean) = putBoolean(key, value)
 }
 
 /** The real store: one named `SharedPreferences` file. */
@@ -34,6 +40,14 @@ class SharedPrefsStore(context: Context, name: String) : KeyValueStore {
 
     override fun clear() {
         prefs.edit { clear() }
+    }
+
+    override fun putStringNow(key: String, value: String?) {
+        prefs.edit(commit = true) { putString(key, value) }
+    }
+
+    override fun putBooleanNow(key: String, value: Boolean) {
+        prefs.edit(commit = true) { putBoolean(key, value) }
     }
 }
 
