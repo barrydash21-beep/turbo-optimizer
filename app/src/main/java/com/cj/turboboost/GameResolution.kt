@@ -209,9 +209,23 @@ object GameResolution {
 
     /** Scales compare as numbers: "0.6" and "0.60" are the same setting. */
     fun sameScale(a: String?, b: String?): Boolean {
+        // Two ways of saying "no scaling" are the same setting; one of them against a factor is not.
+        if (isNoScaling(a) || isNoScaling(b)) return isNoScaling(a) && isNoScaling(b)
         val x = a?.toFloatOrNull() ?: return false
         val y = b?.toFloatOrNull() ?: return false
         return abs(x - y) < 0.001f
+    }
+
+    /**
+     * Whether [scale] scales nothing: absent, `disable`, or a number outside (0, 1). `set
+     * --downscale disable` reads back as `Scaling:-1.0` on the test device. Text that is
+     * neither is not "no scaling"; it is unreadable.
+     */
+    fun isNoScaling(scale: String?): Boolean {
+        val raw = scale?.trim() ?: return true
+        if (raw == "disable") return true
+        val value = raw.toFloatOrNull() ?: return false
+        return value <= 0f || value >= 1f
     }
 
     /**
@@ -254,7 +268,7 @@ object GameResolution {
     /** A custom config that scales nothing and caps nothing is the same as having none. */
     private fun effective(config: InterventionConfig?): InterventionConfig? {
         if (config == null) return null
-        val scale = config.scaling?.toFloatOrNull()?.takeIf { it > 0f && it < 1f }
+        val scale = config.scaling?.takeUnless { isNoScaling(it) }?.toFloatOrNull()
         val fps = config.fps?.toIntOrNull()?.takeIf { it > 0 }
         return if (scale == null && fps == null) null else InterventionConfig(scale?.toString(), fps?.toString())
     }
@@ -275,7 +289,7 @@ object GameResolution {
     private fun holdsConfig(custom: InterventionConfig?, scale: String?, fps: String?): Boolean {
         if (scale == null && fps == null) return false
         val now = effective(custom) ?: return false
-        val sameScaling = if (scale == null) now.scaling == null else sameScale(now.scaling, scale)
+        val sameScaling = sameScale(now.scaling, scale)
         return sameScaling && now.fps == fps?.trim()?.toIntOrNull()?.takeIf { it > 0 }?.toString()
     }
 
@@ -587,7 +601,7 @@ object GameResolution {
     }
 
     fun describe(state: GameModeState): String =
-        state.mode + (state.custom?.scaling?.takeIf { state.mode == CUSTOM }?.let { ", scaling $it" } ?: "") +
+        state.mode + (state.custom?.scaling?.takeIf { state.mode == CUSTOM && !isNoScaling(it) }?.let { ", scaling $it" } ?: "") +
             (effective(state.custom)?.fps?.takeIf { state.mode == CUSTOM }?.let { ", fps $it" } ?: "")
 
     // --- measurement --------------------------------------------------------------------

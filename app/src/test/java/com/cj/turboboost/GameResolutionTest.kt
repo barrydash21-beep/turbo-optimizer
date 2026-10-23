@@ -959,6 +959,76 @@ class GameResolutionTest {
         assertNull(GameResolution.status(shell, store, game).cap)
     }
 
+    // --- -1.0: how `--downscale disable` reads back ------------------------------------------
+
+    @Test
+    fun `-1_0 and disable are no scaling, equal to each other and to none`() {
+        assertTrue(GameResolution.sameScale("-1.0", "disable"))
+        assertTrue(GameResolution.sameScale("-1.0", null))
+        assertTrue(GameResolution.sameScale("-1", "-1.0"))
+        assertFalse(GameResolution.sameScale("-1.0", "0.55"))
+        assertFalse(GameResolution.sameScale("0.55", "-1.0"))
+        assertTrue(GameResolution.isNoScaling("-1.0"))
+        assertTrue(GameResolution.isNoScaling("disable"))
+        assertTrue(GameResolution.isNoScaling(null))
+        assertFalse(GameResolution.isNoScaling("0.55"))
+        assertFalse(GameResolution.isNoScaling("garbage"))
+        assertNull(ResolutionLevel.forScale("-1.0"))
+    }
+
+    private fun minusOne(mode: String, fps: String?) =
+        GameModeState(mode, listOf("standard", "custom"), mapOf(4 to InterventionConfig("-1.0", fps)))
+
+    @Test
+    fun `a cap held with Scaling -1_0 is as applied, and a preset is not`() {
+        assertTrue(GameResolution.isAsApplied(minusOne("custom", "40"), null, "40"))
+        assertFalse(GameResolution.isAsApplied(minusOne("custom", "40"), "0.55", "40"))
+        assertFalse(GameResolution.isAsApplied(minusOne("custom", "30"), null, "40"))
+        // -1.0 with no cap scales nothing and caps nothing: nothing of this app's is held.
+        assertFalse(GameResolution.isAsApplied(minusOne("custom", null), null, null))
+    }
+
+    @Test
+    fun `a restart over Scaling -1_0 with the cap is reset by restart`() {
+        assertTrue(GameResolution.isResetByRestart(minusOne("standard", "40"), null, "b1", "b2", "40"))
+        assertFalse(GameResolution.isResetByRestart(minusOne("standard", "40"), "0.55", "b1", "b2", "40"))
+        assertFalse(GameResolution.isResetByRestart(minusOne("standard", null), null, "b1", "b2", "40"))
+    }
+
+    @Test
+    fun `restore commands treat a -1_0 snapshot as no scaling`() {
+        // The game's own config had a cap and -1.0: put the cap back, scaling off.
+        val withCap = GameModeSnapshot("performance", InterventionConfig("-1.0", "50"), hadInterventions = true)
+        assertEquals(
+            listOf("cmd game set --downscale disable --fps 50 $game", "cmd game mode performance $game"),
+            GameResolution.restoreCommands(game, withCap)
+        )
+        // -1.0 and no cap is the same as no custom config: scaling switched off, other modes kept.
+        val nothing = GameModeSnapshot("performance", InterventionConfig("-1.0", null), hadInterventions = true)
+        assertEquals(
+            listOf("cmd game set --downscale disable $game", "cmd game mode performance $game"),
+            GameResolution.restoreCommands(game, nothing)
+        )
+        assertTrue(GameResolution.matchesSnapshot(GameModeState("performance", listOf("custom"), emptyMap()), nothing))
+    }
+
+    @Test
+    fun `cap only round trip reads -1_0 back and describes it without a scale`() {
+        val shell = GameShell(game, mode = "custom", configs = mutableMapOf(4 to ("0.6" to null)))
+        val store = FakeStore()
+        assertTrue(GameResolution.apply(shell, store, game, null, FpsCap.FPS_40, null).ok)
+        assertEquals("-1.0" to "40", shell.configs[4])
+        assertNull(GameResolution.status(shell, store, game).changedOutside)
+
+        shell.configs[4] = "-1.0" to "30"
+        assertEquals("custom, fps 30", GameResolution.status(shell, store, game).changedOutside)
+
+        shell.configs[4] = "-1.0" to "40"
+        assertTrue(GameResolution.restore(shell, store, game, force = false, runningPid = null).ok)
+        assertEquals("0.6" to null, shell.configs[4])
+        assertEquals("custom", shell.mode)
+    }
+
     // --- a change the app died during ---------------------------------------------------------
 
     /** What [GameResolution.apply] has stored just before its `set`, for a game that had no configs. */
