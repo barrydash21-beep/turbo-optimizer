@@ -960,8 +960,15 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         val probe = ready && resolutionSupported
         // The card's own status call: reads the game, files a finished measurement, nothing else.
         val status = if (probe && pkg != null) GameResolution.status(shell, resolutionStore, pkg) else null
+        val saved = if (status?.cap != null) sessions.all() else emptyList()
         val capSession = status?.cap?.let { cap ->
-            sessions.all().lastOrNull { it.packageName == pkg && it.fpsCap == cap.fps && it.avgFps != null }
+            saved.lastOrNull { it.packageName == pkg && it.fpsCap == cap.fps && it.avgFps != null }
+        }
+        // Same game, same render resolution as the capped session, no cap: what the cap is measured against.
+        val uncappedSession = capSession?.let { capped ->
+            saved.lastOrNull {
+                it.packageName == pkg && it.fpsCap == null && it.renderResolution == capped.renderResolution && it.avgFps != null
+            }
         }
         return DiagnosticsInput(
             androidRelease = Build.VERSION.RELEASE,
@@ -979,6 +986,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
             status = status,
             lastChangeNote = note,
             capSession = capSession,
+            uncappedSession = uncappedSession,
             thermalDump = if (ready) shell.capture("dumpsys thermalservice") else null,
             restrictIgnored = restrictIgnored
         )

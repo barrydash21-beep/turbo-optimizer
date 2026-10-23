@@ -48,6 +48,11 @@ data class DiagnosticsInput(
     val lastChangeNote: String?,
     /** The newest session at the cap held that measured an average FPS. */
     val capSession: SessionRecord?,
+    /**
+     * The newest session of the same package with no cap, at the same render resolution as
+     * [capSession], that measured an average FPS: what the game does without the cap.
+     */
+    val uncappedSession: SessionRecord? = null,
     val thermalDump: String?,
     /** Per restricted package, what the system ignored in this app run's last restriction; null when none ran. */
     val restrictIgnored: Map<String, List<String>>?
@@ -59,6 +64,9 @@ object DiagnosticsPanel {
     /** Between these fractions of the cap, a session's average counts as following it. */
     private const val CAP_TOLERANCE = 1.1f
     private const val CAP_FLOOR = 0.85f
+
+    /** Without the cap the game must run at least this much faster, or the cap is not what held it down. */
+    private const val UNCAPPED_MIN = 1.2f
 
     private val DOWNSCALE = Regex("""--downscale\s*\[([^\]]*)\]""")
 
@@ -192,24 +200,32 @@ object DiagnosticsPanel {
             CheckStatus.NOT_CHECKED,
             input.lastChangeNote?.takeIf { it.contains("FPS cap") } ?: "Help: \"$fpsLine\"; offers $offered; no cap set"
         )
-        val avg = input.capSession?.avgFps
         return when {
             status.changedOutside != null -> DiagnosticRow(name, CheckStatus.UNVERIFIED, "Cap ${cap.label} changed outside Turbo: now ${status.changedOutside}")
             status.resetByRestart -> DiagnosticRow(name, CheckStatus.UNVERIFIED, "Cap ${cap.label} reset by a phone restart; set again at the next launch from Turbo")
-            avg == null -> DiagnosticRow(name, CheckStatus.UNVERIFIED, "Fps ${cap.label} read back; no session measured at this cap yet")
-            // Well below the cap the game ran slower on its own, which says nothing about the cap.
-            avg < cap.fps * CAP_FLOOR -> DiagnosticRow(
-                name,
-                CheckStatus.UNVERIFIED,
-                "Fps ${cap.label} read back; the last session averaged ${fps(avg)} FPS, below the cap on its own, so it does not show the cap working"
-            )
-            avg <= cap.fps * CAP_TOLERANCE -> DiagnosticRow(name, CheckStatus.SUPPORTED, "Fps ${cap.label} read back; last session averaged ${fps(avg)} FPS")
-            else -> DiagnosticRow(
-                name,
-                CheckStatus.UNVERIFIED,
-                "Fps ${cap.label} read back, but the last session averaged ${fps(avg)} FPS: the game does not follow it"
-            )
+            else -> capVerdict(cap.fps, input.capSession?.avgFps, input.uncappedSession?.avgFps).let { (verdict, why) ->
+                DiagnosticRow(name, verdict, "Fps ${cap.label} read back; $why")
+            }
         }
+    }
+
+    /**
+     * Whether measured sessions show the cap working. Supported needs both: a session at the cap
+     * averaging 0.85 to 1.1 times the cap, and one without it (same game, same render
+     * resolution) averaging at least 1.2 times the cap. Anything else is Unverified, and the
+     * evidence always names both averages.
+     */
+    fun capVerdict(cap: Int, capped: Float?, uncapped: Float?): Pair<CheckStatus, String> {
+        val averages = "at the cap ${capped?.let { "${fps(it)} FPS" } ?: "not measured yet"}, " +
+            (uncapped?.let { "uncapped ${fps(it)} FPS" } ?: "no uncapped session")
+        val why = when {
+            capped == null || uncapped == null -> null
+            capped > cap * CAP_TOLERANCE -> "the game ignored the cap"
+            capped < cap * CAP_FLOOR -> "the game ran below the cap on its own"
+            uncapped < cap * UNCAPPED_MIN -> "the game runs near the cap without it too, so this does not show the cap working"
+            else -> return CheckStatus.SUPPORTED to averages
+        }
+        return CheckStatus.UNVERIFIED to (why?.let { "$averages: $it" } ?: averages)
     }
 
     private fun thermalRow(input: DiagnosticsInput): DiagnosticRow {

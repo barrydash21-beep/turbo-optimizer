@@ -31,9 +31,14 @@ class DiagnosticsPanelTest {
         mapOf(2 to InterventionConfig("0.8", "90"), 4 to InterventionConfig("0.55", "40"))
     )
 
+    private fun session(avg: Float, cap: Int?) =
+        SessionRecord(FAKE_GAME, 90f, 1L, 300_000L, avg, null, null, 0, 10, 10, 10, renderResolution = "LOWER 0.55", fpsCap = cap)
+
     private fun input(
-        status: GameResolutionStatus? = GameResolutionStatus(level = ResolutionLevel.LOWER, cap = FpsCap.FPS_40, state = state),
+        cap: FpsCap = FpsCap.FPS_40,
+        status: GameResolutionStatus? = GameResolutionStatus(level = ResolutionLevel.LOWER, cap = cap, state = state),
         capAvg: Float? = null,
+        uncappedAvg: Float? = null,
         helpOutput: String? = help,
         shellReady: Boolean = true,
         thermal: String? = "Thermal Status: 0",
@@ -46,9 +51,8 @@ class DiagnosticsPanelTest {
         read = GameResolution.Read(state),
         status = status,
         lastChangeNote = null,
-        capSession = capAvg?.let {
-            SessionRecord(FAKE_GAME, 90f, 1L, 300_000L, it, null, null, 0, 10, 10, 10, fpsCap = 40)
-        },
+        capSession = capAvg?.let { session(it, cap.fps) },
+        uncappedSession = uncappedAvg?.let { session(it, null) },
         thermalDump = thermal,
         restrictIgnored = ignored
     )
@@ -96,31 +100,50 @@ class DiagnosticsPanelTest {
     }
 
     @Test
-    fun `fps cap is supported only when the read-back and a measured session agree`() {
-        val measured = row(DiagnosticsPanel.rows(input(capAvg = 39.8f)), "FPS cap")
-        assertEquals(CheckStatus.SUPPORTED, measured.status)
-        assertTrue(measured.evidence, measured.evidence.contains("39.8"))
-
-        val unmeasured = row(DiagnosticsPanel.rows(input()), "FPS cap")
-        assertEquals(CheckStatus.UNVERIFIED, unmeasured.status)
-        assertTrue(unmeasured.evidence.contains("no session measured"))
+    fun `lobby case - capped and uncapped both near the cap is unverified`() {
+        // Measured on the test device: a lobby that runs at about 30 with or without the cap.
+        val lobby = row(DiagnosticsPanel.rows(input(cap = FpsCap.FPS_30, capAvg = 28f, uncappedAvg = 30f)), "FPS cap")
+        assertEquals(CheckStatus.UNVERIFIED, lobby.status)
+        assertTrue(lobby.evidence, lobby.evidence.contains("at the cap 28.0 FPS, uncapped 30.0 FPS"))
     }
 
     @Test
-    fun `a game that ignores the cap leaves it unverified, with the measured number`() {
-        val ignored = row(DiagnosticsPanel.rows(input(capAvg = 59.7f)), "FPS cap")
+    fun `honoured case - near the cap with it, well above without it, is supported`() {
+        val honoured = row(DiagnosticsPanel.rows(input(capAvg = 39f, uncappedAvg = 55f)), "FPS cap")
+        assertEquals(CheckStatus.SUPPORTED, honoured.status)
+        assertEquals("Fps 40 read back; at the cap 39.0 FPS, uncapped 55.0 FPS", honoured.evidence)
+    }
+
+    @Test
+    fun `ignored case - the same rate with and without the cap is unverified, and says so`() {
+        val ignored = row(DiagnosticsPanel.rows(input(capAvg = 55f, uncappedAvg = 55f)), "FPS cap")
         assertEquals(CheckStatus.UNVERIFIED, ignored.status)
-        assertTrue(ignored.evidence, ignored.evidence.contains("59.7 FPS"))
+        assertTrue(ignored.evidence, ignored.evidence.contains("at the cap 55.0 FPS, uncapped 55.0 FPS"))
+        assertTrue(ignored.evidence, ignored.evidence.contains("the game ignored the cap"))
     }
 
     @Test
-    fun `a session well below the cap on its own does not prove the cap`() {
-        // Measured on the test device: a lobby that runs at 30 under a 40 cap.
-        val slow = row(DiagnosticsPanel.rows(input(capAvg = 30.0f)), "FPS cap")
-        assertEquals(CheckStatus.UNVERIFIED, slow.status)
-        assertTrue(slow.evidence, slow.evidence.contains("30.0 FPS, below the cap"))
-        assertEquals(CheckStatus.SUPPORTED, row(DiagnosticsPanel.rows(input(capAvg = 34.5f)), "FPS cap").status)
-        assertEquals(CheckStatus.SUPPORTED, row(DiagnosticsPanel.rows(input(capAvg = 43.9f)), "FPS cap").status)
+    fun `one session alone is never enough, and the evidence says what is missing`() {
+        val noUncapped = row(DiagnosticsPanel.rows(input(capAvg = 39f)), "FPS cap")
+        assertEquals(CheckStatus.UNVERIFIED, noUncapped.status)
+        assertTrue(noUncapped.evidence, noUncapped.evidence.contains("at the cap 39.0 FPS, no uncapped session"))
+
+        val noCapped = row(DiagnosticsPanel.rows(input(uncappedAvg = 55f)), "FPS cap")
+        assertEquals(CheckStatus.UNVERIFIED, noCapped.status)
+        assertTrue(noCapped.evidence, noCapped.evidence.contains("at the cap not measured yet, uncapped 55.0 FPS"))
+
+        val neither = row(DiagnosticsPanel.rows(input()), "FPS cap")
+        assertEquals(CheckStatus.UNVERIFIED, neither.status)
+        assertTrue(neither.evidence, neither.evidence.contains("no uncapped session"))
+    }
+
+    @Test
+    fun `the band edges are 0_85 and 1_1 times the cap, and 1_2 times uncapped`() {
+        assertEquals(CheckStatus.SUPPORTED, DiagnosticsPanel.capVerdict(40, 34.1f, 48.1f).first)
+        assertEquals(CheckStatus.SUPPORTED, DiagnosticsPanel.capVerdict(40, 43.9f, 48.1f).first)
+        assertEquals(CheckStatus.UNVERIFIED, DiagnosticsPanel.capVerdict(40, 33.9f, 60f).first)
+        assertEquals(CheckStatus.UNVERIFIED, DiagnosticsPanel.capVerdict(40, 44.1f, 60f).first)
+        assertEquals(CheckStatus.UNVERIFIED, DiagnosticsPanel.capVerdict(40, 39f, 47.9f).first)
     }
 
     @Test
@@ -184,12 +207,12 @@ class DiagnosticsPanelTest {
 
     @Test
     fun `the report is plain text, one line per row`() {
-        val rows = DiagnosticsPanel.rows(input(capAvg = 39.8f))
+        val rows = DiagnosticsPanel.rows(input(capAvg = 39.8f, uncappedAvg = 58.1f))
         val text = DiagnosticsPanel.report(rows, "1.2.4", "2026-10-23 12:00:00")
         val lines = text.lines()
         assertEquals("Turbo diagnostics, app 1.2.4, checked 2026-10-23 12:00:00", lines.first())
         assertEquals(rows.size + 1, lines.size)
-        assertTrue(lines.contains("- FPS cap: Supported - Fps 40 read back; last session averaged 39.8 FPS"))
+        assertTrue(lines.contains("- FPS cap: Supported - Fps 40 read back; at the cap 39.8 FPS, uncapped 58.1 FPS"))
         assertFalse(text.contains('\t'))
     }
 }
