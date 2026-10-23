@@ -118,6 +118,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     private val resolutionStore: KeyValueStore = Stores.gameResolution(app)
     private val legacyResolutionStore: KeyValueStore = Stores.legacyResolution(app)
     private var staleRevertStarted = false
+    private var bucketRecheckStarted = false
     private var overrideCheckStarted = false
 
     var step by mutableStateOf(BoostStep.IDLE)
@@ -1039,6 +1040,9 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     val tune = PerformanceTuner.revertGamingTweaks(tunerStore)
                     // Each restricted package's own saved op mode and bucket.
                     val restricted = BackgroundRestrictor.restore(RamCleaner.shell, restrictionStore)
+                    if (restricted.ok) {
+                        BucketRecheck.remember(RamCleaner.shell, restrictionStore, restricted, GameResolution.bootId(RamCleaner.shell))
+                    }
                     withContext(Dispatchers.Main) { noteRestored(restricted) }
                     val failed = tune.failed + restricted.failedPackages.map { "Background app $it" }
                     if (failed.isEmpty()) system else system.copy(failed = system.failed + failed)
@@ -1053,6 +1057,43 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     private fun noteRestored(report: RestrictionReport) {
         if (report.packages.isNotEmpty()) {
             restrictOutcomes = restrictOutcomes + report.packages.associate { it.packageName to "restore: ${it.detail()}" }
+        }
+    }
+
+    /**
+     * On app start, in a new boot: puts back any standby bucket a restart returned to
+     * restricted after it was restored ([BucketRecheck]). Waits for Shizuku like
+     * [revertStaleTweaks]; does nothing in the boot the restore happened in.
+     */
+    fun recheckBuckets() {
+        if (bucketRecheckStarted) return
+        bucketRecheckStarted = true
+        viewModelScope.launch {
+            repeat(STALE_REVERT_ATTEMPTS) {
+                val outcomes = withContext(Dispatchers.IO) {
+                    val shell = RamCleaner.shell
+                    if (!shell.isAvailable()) {
+                        null
+                    } else {
+                        BucketRecheck.recheck(shell, restrictionStore, GameResolution.bootId(shell)) ?: emptyList()
+                    }
+                }
+                if (outcomes == null) {
+                    delay(2000)
+                    return@repeat
+                }
+                val setAgain = outcomes.filter { it.setAgain }
+                if (setAgain.isNotEmpty()) {
+                    Log.i(TAG, "Buckets after a restart: $outcomes")
+                    restrictOutcomes = restrictOutcomes + setAgain.associate {
+                        it.packageName to "after restart: bucket ${it.found} set back to ${it.saved}, reads ${it.after ?: "unreadable"}"
+                    }
+                    val names = setAgain.joinToString(", ") { it.packageName }
+                    val held = setAgain.all { it.after == it.saved }
+                    _events.send(BoostEvent.ShowToast(if (held) "Put back the background setting of $names after the restart" else "Could not put back the background setting of $names after the restart"))
+                }
+                return@launch
+            }
         }
     }
 
@@ -1082,6 +1123,11 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 result?.second?.let { noteRestored(it) }
+                if (result?.second?.ok == true) {
+                    withContext(Dispatchers.IO) {
+                        BucketRecheck.remember(RamCleaner.shell, restrictionStore, result.second, GameResolution.bootId(RamCleaner.shell))
+                    }
+                }
                 if (result != null && result.first.ok && result.second.ok) {
                     val what = listOfNotNull("display settings".takeIf { tweaks }, "background apps".takeIf { restrictions })
                     _events.send(BoostEvent.ShowToast("Restored your original ${what.joinToString(" and ")}"))

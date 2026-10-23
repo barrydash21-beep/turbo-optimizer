@@ -197,6 +197,8 @@ class GameMonitorService : Service() {
                         val report = PerformanceTuner.revertGamingTweaks(store)
                         val restored = BackgroundRestrictor.restore(RamCleaner.shell, restrictions)
                         Log.i(TAG, "Background apps restored: " + restored.packages.joinToString("; ") { "${it.packageName} ${it.detail()}" })
+                        // A reboot soon after can bring the restricted bucket back: checked at the next app start.
+                        if (restored.ok) BucketRecheck.remember(RamCleaner.shell, restrictions, restored, GameResolution.bootId(RamCleaner.shell))
                         if (report.failed.isEmpty() && !report.unavailable && restored.ok) {
                             finish()
                             return

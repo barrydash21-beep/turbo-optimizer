@@ -180,6 +180,7 @@ class MainActivity : ComponentActivity() {
 
         viewModel.startShizukuDetection()
         viewModel.revertStaleTweaks()
+        viewModel.recheckBuckets()
         viewModel.checkDisplayOverride()
     }
 
