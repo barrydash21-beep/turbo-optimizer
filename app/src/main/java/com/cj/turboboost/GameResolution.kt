@@ -22,6 +22,23 @@ enum class ResolutionLevel(val label: String, val scale: String) {
     }
 }
 
+/**
+ * A frame-rate cap on a game's card. [fps] is exactly what `cmd game set --fps` receives; the
+ * shell takes any integer, so only these fixed values are ever sent. Selections are stored by
+ * [fps], not by name. The cap can only lower the game's frame rate, and a game may ignore it.
+ */
+enum class FpsCap(val fps: Int) {
+    FPS_45(45),
+    FPS_40(40),
+    FPS_30(30);
+
+    val label: String get() = fps.toString()
+
+    companion object {
+        fun forFps(fps: String?): FpsCap? = fps?.trim()?.toIntOrNull()?.let { v -> entries.firstOrNull { it.fps == v } }
+    }
+}
+
 /** A graphics buffer size as SurfaceFlinger reports it (`w/h:810x1845`). */
 data class BufferSize(val width: Int, val height: Int) {
     val pixels: Long get() = width.toLong() * height
@@ -72,6 +89,10 @@ data class GameResolutionStatus(
     val unavailableReason: String? = null,
     /** The preset this app holds for the game; null means the game's own default. */
     val level: ResolutionLevel? = null,
+    /** The frame-rate cap this app holds for the game; null means none. */
+    val cap: FpsCap? = null,
+    /** The game's mode and configs as last read, for the diagnostics panel. */
+    val state: GameModeState? = null,
     /** "Renders at ..." from a real SurfaceFlinger measurement, or null when there is none. */
     val result: String? = null,
     /** A change was made while the game ran; that process still has the old setting. */
@@ -94,6 +115,11 @@ data class GameResolutionStatus(
  * The setting is read by the game process at start, so it takes effect on the next launch.
  * The game's previous mode and custom config are snapshotted before the first change and put
  * back by [restore], which refuses to overwrite a state someone else has changed since.
+ *
+ * The same custom config also carries an optional frame-rate cap ([FpsCap], `--fps`). Both are
+ * written in one `set` so neither clears the other: on a Pova 7 (Android 16), `set` without
+ * `--fps` writes `fps-override: null` and drops a cap, while `set` without `--downscale`
+ * keeps the scaling. The cap is held and verified exactly like the preset.
  */
 object GameResolution {
 
@@ -116,6 +142,15 @@ object GameResolution {
     private const val KEY_NATIVE = "native_"
     private const val KEY_MEASURED = "measured_"
     private const val KEY_BOOT = "boot_"
+
+    /** The cap this app set and still holds, by fps; beside [KEY_APPLIED], which holds the scale. */
+    private const val KEY_APPLIED_FPS = "fps_cap_"
+
+    /**
+     * `scale|fps` of a change in progress, written before its `set` and cleared after. Still
+     * present at the next read means the app died mid-change: see [settleInterrupted].
+     */
+    private const val KEY_PENDING = "pending_change_"
 
     /** Changes on every boot; how a mode reset by a restart is told from one made by someone else. */
     private const val BOOT_ID = "/proc/sys/kernel/random/boot_id"
@@ -233,28 +268,53 @@ object GameResolution {
         return sameScaling && now.fps == was.fps
     }
 
-    /** Whether the game still holds exactly the downscale this app set. */
-    fun isAsApplied(state: GameModeState, applied: String?): Boolean =
-        applied != null && state.mode == CUSTOM && sameScale(state.custom?.scaling, applied)
+    /**
+     * Whether [custom] is exactly what this app wrote: [scale] (null: no scaling) and [fps]
+     * (null: no cap). `disable`, -1 and 0 all read as "none".
+     */
+    private fun holdsConfig(custom: InterventionConfig?, scale: String?, fps: String?): Boolean {
+        if (scale == null && fps == null) return false
+        val now = effective(custom) ?: return false
+        val sameScaling = if (scale == null) now.scaling == null else sameScale(now.scaling, scale)
+        return sameScaling && now.fps == fps?.trim()?.toIntOrNull()?.takeIf { it > 0 }?.toString()
+    }
+
+    /** Whether the game still holds exactly the downscale [applied] and cap [appliedFps] this app set. */
+    fun isAsApplied(state: GameModeState, applied: String?, appliedFps: String? = null): Boolean =
+        state.mode == CUSTOM && holdsConfig(state.custom, applied, appliedFps)
 
     /**
      * Whether a phone restart, not a person, took the game out of the preset. Seen on a Pova 7
      * (Android 16): after a reboot every game is back in standard mode while its per-mode
      * configs survive, so the downscale stops applying. Only when the boot changed since the
      * preset was set, the mode is standard, and the custom config is exactly what this app
-     * wrote (its scale, no frame-rate cap); anything else is a change made outside the app.
+     * wrote (its scale and its cap, or no cap); anything else is a change made outside the app.
      */
-    fun isResetByRestart(state: GameModeState, applied: String?, appliedBoot: String?, currentBoot: String?): Boolean {
-        if (applied == null || appliedBoot == null || currentBoot == null || appliedBoot == currentBoot) return false
-        val custom = effective(state.custom) ?: return false
-        return state.mode == "standard" && sameScale(custom.scaling, applied) && custom.fps == null
+    fun isResetByRestart(
+        state: GameModeState,
+        applied: String?,
+        appliedBoot: String?,
+        currentBoot: String?,
+        appliedFps: String? = null
+    ): Boolean {
+        if ((applied == null && appliedFps == null) || appliedBoot == null || currentBoot == null || appliedBoot == currentBoot) return false
+        return state.mode == "standard" && holdsConfig(state.custom, applied, appliedFps)
     }
+
+    /**
+     * The `set` that writes [scale] and [fps] in one go. No cap leaves `--fps` out, which
+     * clears it ([GameResolution] doc), so a scale-only command is unchanged from 1.2.3.
+     * Both values come from [ResolutionLevel] and [FpsCap] only.
+     */
+    fun setCommand(pkg: String, scale: ResolutionLevel?, fps: FpsCap?): String =
+        "cmd game set --downscale ${scale?.scale ?: "disable"}" + (fps?.let { " --fps ${it.fps}" } ?: "") + " $pkg"
 
     /** The commands that put [snap] back on [pkg], in order. */
     fun restoreCommands(pkg: String, snap: GameModeSnapshot): List<String> = buildList {
         val custom = effective(snap.custom)
         when {
-            // The game had its own custom config: write it back.
+            // The game had its own custom config: write it back. Its own cap goes back with
+            // it; with none, leaving `--fps` out clears this app's cap.
             custom != null -> add(
                 "cmd game set --downscale ${custom.scaling ?: "disable"}" +
                     (custom.fps?.let { " --fps $it" } ?: "") + " $pkg"
@@ -290,12 +350,20 @@ object GameResolution {
         store.putString(KEY_SNAP_MODE + pkg, null)
         store.putString(KEY_SNAP_CUSTOM + pkg, null)
         store.putString(KEY_APPLIED + pkg, null)
+        store.putString(KEY_APPLIED_FPS + pkg, null)
+        store.putString(KEY_PENDING + pkg, null)
         store.putString(KEY_MEASURED + pkg, null)
         store.putString(KEY_BOOT + pkg, null)
     }
 
     /** The scale this app set and still holds for [pkg], or null. */
     fun applied(store: KeyValueStore, pkg: String): String? = store.getString(KEY_APPLIED + pkg)
+
+    /** The cap this app set and still holds for [pkg], or null. */
+    fun appliedFps(store: KeyValueStore, pkg: String): FpsCap? = FpsCap.forFps(store.getString(KEY_APPLIED_FPS + pkg))
+
+    /** Whether this app holds a preset or a cap for [pkg], so the game must stay in custom mode. */
+    fun holds(store: KeyValueStore, pkg: String): Boolean = applied(store, pkg) != null || appliedFps(store, pkg) != null
 
     fun native(store: KeyValueStore, pkg: String): BufferSize? = BufferSize.parse(store.getString(KEY_NATIVE + pkg))
 
@@ -308,6 +376,9 @@ object GameResolution {
     /** For the session record: `LOW 0.6` with a preset, `default` without. */
     fun sessionValue(store: KeyValueStore, pkg: String): String =
         applied(store, pkg)?.let { scale -> "${ResolutionLevel.forScale(scale)?.label ?: "CUSTOM"} $scale" } ?: "default"
+
+    /** For the session record: the cap held, or null for none ([SessionRecord.fpsCap]). */
+    fun sessionFpsCap(store: KeyValueStore, pkg: String): Int? = appliedFps(store, pkg)?.fps
 
     /** A change made while [runningPid] ran does not reach that process; remember which one it was. */
     private fun markStale(store: KeyValueStore, pkg: String, runningPid: String?) {
@@ -348,7 +419,41 @@ object GameResolution {
     fun bootId(shell: ShellExecutor): String? = shell.capture("cat $BOOT_ID")?.trim()?.takeIf { it.isNotEmpty() }
 
     private fun resetByRestart(shell: ShellExecutor, store: KeyValueStore, pkg: String, state: GameModeState): Boolean =
-        isResetByRestart(state, applied(store, pkg), store.getString(KEY_BOOT + pkg), bootId(shell))
+        isResetByRestart(state, applied(store, pkg), store.getString(KEY_BOOT + pkg), bootId(shell), appliedFps(store, pkg)?.fps?.toString())
+
+    private fun isAsApplied(store: KeyValueStore, pkg: String, state: GameModeState): Boolean =
+        isAsApplied(state, applied(store, pkg), appliedFps(store, pkg)?.fps?.toString())
+
+    /**
+     * Finishes a change the app died in the middle of ([KEY_PENDING]): when the game holds
+     * exactly what that change asked for, it is recorded as applied; when it still holds what
+     * this app held before, or its snapshot with nothing held, the leftovers are dropped.
+     * Anything else stays as it is, and [status] reports it as changed outside the app, with
+     * the snapshot kept for RESTORE ANYWAY.
+     */
+    private fun settleInterrupted(shell: ShellExecutor, store: KeyValueStore, pkg: String, state: GameModeState) {
+        val pending = store.getString(KEY_PENDING + pkg) ?: return
+        val scale = pending.substringBefore('|').takeIf { it.isNotEmpty() }
+        val fps = pending.substringAfter('|', "").takeIf { it.isNotEmpty() }
+        val snap = snapshot(store, pkg)
+        when {
+            // The snapshot is saved before the pending mark, so no `set` ran without one.
+            snap == null -> Unit
+            isAsApplied(state, scale, fps) -> {
+                store.putString(KEY_APPLIED + pkg, scale)
+                store.putString(KEY_APPLIED_FPS + pkg, fps)
+                store.putString(KEY_BOOT + pkg, bootId(shell))
+                log { Log.i(TAG, "Interrupted change on $pkg completed: $pending") }
+            }
+            holds(store, pkg) && isAsApplied(store, pkg, state) -> Unit
+            !holds(store, pkg) && matchesSnapshot(state, snap) -> clearSnapshot(store, pkg)
+            else -> {
+                log { Log.w(TAG, "Interrupted change on $pkg left ${describe(state)}") }
+                return
+            }
+        }
+        store.putString(KEY_PENDING + pkg, null)
+    }
 
     /** `pidof` output for [pkg], or null when it is not running. */
     fun pidOf(shell: ShellExecutor, pkg: String): String? =
@@ -357,39 +462,68 @@ object GameResolution {
     /**
      * Sets [level] for [pkg]. The previous mode and custom config are snapshotted first, once;
      * a later preset on top keeps that first snapshot. [runningPid] is the game's process if it
-     * is running now, which keeps the old setting until it restarts.
+     * is running now, which keeps the old setting until it restarts. The cap already held is kept.
+     */
+    fun apply(shell: ShellExecutor, store: KeyValueStore, pkg: String, level: ResolutionLevel, runningPid: String?): GameResolutionResult =
+        apply(shell, store, pkg, level, appliedFps(store, pkg), runningPid)
+
+    /**
+     * Sets [level] and [cap] together in one `set` ([setCommand]); the card passes the one it
+     * keeps unchanged, so changing either never drops the other. Both null is the game's own
+     * default: the snapshot goes back through [restore]. Applied only when the read-back shows
+     * both values; a read-back does not show that the game renders or paces itself that way.
      */
     @Synchronized
-    fun apply(shell: ShellExecutor, store: KeyValueStore, pkg: String, level: ResolutionLevel, runningPid: String?): GameResolutionResult {
+    fun apply(
+        shell: ShellExecutor,
+        store: KeyValueStore,
+        pkg: String,
+        level: ResolutionLevel?,
+        cap: FpsCap?,
+        runningPid: String?
+    ): GameResolutionResult {
         if (!GameRegistry.isValidPackageName(pkg)) return GameResolutionResult(false, "Not a package name: $pkg")
+        if (level == null && cap == null) return restore(shell, store, pkg, force = false, runningPid = runningPid)
         if (!shell.isAvailable()) return GameResolutionResult(false, "Shizuku not connected", unavailable = true)
         val read = read(shell, pkg)
         val before = read.state
             ?: return GameResolutionResult(false, read.reason ?: "Could not read the game mode", unavailable = read.unavailable)
+        settleInterrupted(shell, store, pkg, before)
 
         val created = snapshot(store, pkg) == null
         if (created) saveSnapshot(store, pkg, before)
+        val scale = level?.scale
+        val fps = cap?.fps?.toString()
+        store.putString(KEY_PENDING + pkg, "${scale.orEmpty()}|${fps.orEmpty()}")
 
-        val set = runCaptured(shell, "cmd game set --downscale ${level.scale} $pkg")
+        val set = runCaptured(shell, setCommand(pkg, level, cap))
         val after = read(shell, pkg).state
-        log { Log.i(TAG, "Downscale $pkg -> ${level.scale}: exit=${set?.first} out=${set?.second} read back=$after") }
-        if (set?.first == 0 && after != null && isAsApplied(after, level.scale)) {
-            store.putString(KEY_APPLIED + pkg, level.scale)
+        log { Log.i(TAG, "Downscale $pkg -> ${scale ?: "disable"}, fps ${fps ?: "none"}: exit=${set?.first} out=${set?.second} read back=$after") }
+        if (set?.first == 0 && after != null && isAsApplied(after, scale, fps)) {
+            store.putString(KEY_APPLIED + pkg, scale)
+            store.putString(KEY_APPLIED_FPS + pkg, fps)
             store.putString(KEY_BOOT + pkg, bootId(shell))
+            store.putString(KEY_PENDING + pkg, null)
             markStale(store, pkg, runningPid)
-            return GameResolutionResult(true, "${level.label} set")
+            return GameResolutionResult(true, "${describeChoice(level, cap)} set")
         }
+        store.putString(KEY_PENDING + pkg, null)
 
         // Nothing changed: drop the snapshot this call took, so the next try starts clean.
         val snap = snapshot(store, pkg)
         if (created && snap != null && after != null && matchesSnapshot(after, snap)) clearSnapshot(store, pkg)
         val said = set?.second?.takeIf { it.isNotBlank() }
+        val what = listOfNotNull("Downscale".takeIf { level != null }, "FPS cap".takeIf { cap != null }).joinToString(" and ")
         return GameResolutionResult(
             false,
-            said?.let { unavailableReason(it) } ?: "Downscale not applied${said?.let { ": $it" } ?: ""}",
+            said?.let { unavailableReason(it) } ?: "$what not applied${said?.let { ": $it" } ?: ""}",
             unavailable = said?.let { unavailableReason(it) } != null
         )
     }
+
+    /** `LOW`, `40 FPS cap` or `LOW and 40 FPS cap`, for the result toasts. */
+    private fun describeChoice(level: ResolutionLevel?, cap: FpsCap?): String =
+        listOfNotNull(level?.label, cap?.let { "${it.label} FPS cap" }).joinToString(" and ")
 
     /**
      * Puts the snapshot back. Without [force], refuses when the game's mode no longer holds
@@ -400,13 +534,17 @@ object GameResolution {
     fun restore(shell: ShellExecutor, store: KeyValueStore, pkg: String, force: Boolean, runningPid: String?): GameResolutionResult {
         val snap = snapshot(store, pkg) ?: run {
             store.putString(KEY_APPLIED + pkg, null)
+            store.putString(KEY_APPLIED_FPS + pkg, null)
+            store.putString(KEY_PENDING + pkg, null)
             return GameResolutionResult(true, "Already at the game's default")
         }
         if (!shell.isAvailable()) return GameResolutionResult(false, "Shizuku not connected", unavailable = true)
         val read = read(shell, pkg)
         val now = read.state ?: return GameResolutionResult(false, read.reason ?: "Could not read the game mode")
+        settleInterrupted(shell, store, pkg, now)
+        if (snapshot(store, pkg) == null) return GameResolutionResult(true, "Already at the game's default")
 
-        val ours = isAsApplied(now, applied(store, pkg)) || resetByRestart(shell, store, pkg, now)
+        val ours = isAsApplied(store, pkg, now) || resetByRestart(shell, store, pkg, now)
         if (!force && !ours) {
             return GameResolutionResult(false, "Changed outside Turbo: now ${describe(now)}", changedOutside = true)
         }
@@ -430,22 +568,26 @@ object GameResolution {
      */
     @Synchronized
     fun reapplyBeforeLaunch(shell: ShellExecutor, store: KeyValueStore, pkg: String): GameResolutionResult? {
-        if (!GameRegistry.isValidPackageName(pkg) || applied(store, pkg) == null || !shell.isAvailable()) return null
+        if (!GameRegistry.isValidPackageName(pkg) || !holds(store, pkg) || !shell.isAvailable()) return null
         val now = read(shell, pkg).state ?: return null
         if (!resetByRestart(shell, store, pkg, now)) return null
         val applied = applied(store, pkg)
+        val cap = appliedFps(store, pkg)
+        // The config with both values survived the restart: switching the mode back restores both.
         val switched = runCaptured(shell, "cmd game mode $CUSTOM $pkg")
         val after = read(shell, pkg).state
         log { Log.i(TAG, "Downscale $pkg re-applied after a restart: exit=${switched?.first} read back=$after") }
-        if (switched?.first == 0 && after != null && isAsApplied(after, applied)) {
+        if (switched?.first == 0 && after != null && isAsApplied(store, pkg, after)) {
             store.putString(KEY_BOOT + pkg, bootId(shell))
-            return GameResolutionResult(true, "${ResolutionLevel.forScale(applied)?.label ?: applied} set again after the phone restarted")
+            val what = listOfNotNull(applied?.let { ResolutionLevel.forScale(it)?.label ?: it }, cap?.let { "${it.label} FPS cap" })
+            return GameResolutionResult(true, "${what.joinToString(" and ")} set again after the phone restarted")
         }
         return GameResolutionResult(false, "Could not set the preset again after the phone restarted")
     }
 
     fun describe(state: GameModeState): String =
-        state.mode + (state.custom?.scaling?.takeIf { state.mode == CUSTOM }?.let { ", scaling $it" } ?: "")
+        state.mode + (state.custom?.scaling?.takeIf { state.mode == CUSTOM }?.let { ", scaling $it" } ?: "") +
+            (effective(state.custom)?.fps?.takeIf { state.mode == CUSTOM }?.let { ", fps $it" } ?: "")
 
     // --- measurement --------------------------------------------------------------------
 
@@ -535,10 +677,16 @@ object GameResolution {
     fun needsMeasurement(store: KeyValueStore, pkg: String): Boolean =
         applied(store, pkg) != null || native(store, pkg) == null
 
-    /** The card's status: reads the game's mode, collects any finished measurement, checks a pending restart. */
+    /**
+     * The card's status: reads the game's mode, settles a change the app died during,
+     * collects any finished measurement, checks a pending restart. Synchronized with [apply]
+     * so an apply in flight is never mistaken for an interrupted one.
+     */
+    @Synchronized
     fun status(shell: ShellExecutor, store: KeyValueStore, pkg: String): GameResolutionStatus {
         val read = read(shell, pkg)
         val state = read.state ?: return GameResolutionStatus(unavailableReason = read.reason)
+        settleInterrupted(shell, store, pkg, state)
         collect(shell, store, pkg)
 
         val stale = store.getString(KEY_STALE_PID + pkg)
@@ -547,13 +695,19 @@ object GameResolution {
         if (stale != null && !pending) store.putString(KEY_STALE_PID + pkg, null)
 
         val applied = applied(store, pkg)
+        val held = holds(store, pkg)
         val result = applied?.let { resultText(native(store, pkg), measured(store, pkg, it)) }
-        val restarted = applied != null && !isAsApplied(state, applied) && resetByRestart(shell, store, pkg, state)
+        val asApplied = held && isAsApplied(store, pkg, state)
+        val restarted = held && !asApplied && resetByRestart(shell, store, pkg, state)
+        // A snapshot with nothing held: a change the app died during left something else.
+        val orphaned = !held && snapshot(store, pkg)?.let { !matchesSnapshot(state, it) } == true
         return GameResolutionStatus(
             level = ResolutionLevel.forScale(applied),
+            cap = appliedFps(store, pkg),
+            state = state,
             result = result,
             pendingRestart = pending,
-            changedOutside = if (applied != null && !isAsApplied(state, applied) && !restarted) describe(state) else null,
+            changedOutside = if ((held && !asApplied && !restarted) || orphaned) describe(state) else null,
             resetByRestart = restarted
         )
     }
