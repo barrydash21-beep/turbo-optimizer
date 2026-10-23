@@ -60,6 +60,9 @@ Turbo Optimizer implements Android's native `VpnService` API strictly as an **on
 | **Distraction & Sync Management** | Toggles Priority Do Not Disturb and pauses master sync (`ContentResolver.setMasterSyncAutomatically`). | Turbo Profile |
 | **Background Traffic Reduction** | Activates the local loopback `VpnService` to pause background packet jitter. | Opt-in |
 | **Session Diagnostics** | Parses `dumpsys SurfaceFlinger` (frame latency) and `dumpsys thermalservice` (thermal status). | Active Monitoring |
+| **Thermal FPS Cap** | Per game, Off, 45, 40 or 30 FPS through the game mode's custom config (`cmd game set --downscale <scale\|disable> --fps <n>`, Android 14+), written in one command with the render resolution so neither clears the other. Applied only when `cmd game list-configs` reads it back; it cannot raise a game's own frame rate and a game may ignore it, so the card shows the last measured session average at that cap. Restored with the resolution snapshot. | Per Game, Opt-in |
+| **Diagnostics Panel** | Read-only rows (Supported, Unsupported, Unverified, Not checked) with one line of evidence each: Android and device, Shizuku, `cmd game` for the selected game, its mode and config, the downscale and FPS cap levers, thermal status and ignored bucket changes. Probed only when opened or re-checked; COPY REPORT copies it as plain text. | On Demand |
+| **Session Comparison** | Groups the selected game's saved sessions (the newest 20) by refresh rate, render resolution and FPS cap, and compares two groups by median FPS, median 1% low, time to thermal status 1 and worst thermal status. A difference shows only with 3 runs in each group. | On Demand |
 
 ---
 

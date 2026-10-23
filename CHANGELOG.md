@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2026-10-23
+
+### Added
+- THERMAL FPS CAP on each game's card, under the render resolution: OFF, 45, 40 or 30 FPS through Android's game mode (Android 14 and later). It asks first, like the resolution options, and takes effect the next time the game opens. It can only lower the frame rate, never raise it above the game's own setting, and a game may ignore it.
+- The cap and the render resolution are written together, so changing one keeps the other. A cap is shown as set only when Android reads it back. The card then shows the average FPS of the last session played at that cap, or "Not measured yet", and notes that the read-back alone does not prove the game follows it.
+- The cap is part of the snapshot and restore the resolution already uses: DEFAULT with the cap OFF puts back the mode and settings the game had before, including a frame-rate setting of its own. A cap changed outside the app is reported and only overwritten if you confirm. After a phone restart, Turbo sets the cap again with the resolution when it launches the game.
+- Each session now records the cap it ran under. Sessions saved by earlier versions still load, with no cap.
+- A Diagnostics section, read-only: Android version, device, Shizuku, whether `cmd game` works for the selected game, its current mode and config, the resolution and FPS cap levers, thermal status, and the apps whose standby bucket change was ignored. Each row says Supported, Unsupported, Unverified or Not checked, with one line of evidence. Supported needs a read-back; the FPS cap also needs a measured session near the cap. It checks only when opened or on RE-CHECK, and COPY REPORT copies it as plain text.
+- A Session comparison section, read-only: pick two groups of the selected game's saved sessions, grouped by refresh rate, render resolution and FPS cap, and compare run count, median average FPS, median 1% low, median time to thermal status 1 (and how many runs never reached it) and the worst thermal status. A difference shows only when both groups have at least 3 runs. Only the newest 20 sessions are kept.
+
+### Changed
+- If the app is closed in the middle of a resolution or cap change, the next start finishes recording it when the game holds what was asked, or reports the game's mode as changed outside Turbo with RESTORE ANYWAY.
+
 ## [1.2.3] - 2026-10-18
 
 ### Added
