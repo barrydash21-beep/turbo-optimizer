@@ -1450,7 +1450,8 @@ private fun SessionSummary(
             color = Tac.Surface,
             border = BorderStroke(1.dp, Tac.Line)
         ) {
-            Column(Modifier.padding(20.dp)) {
+            // Scrolls: in landscape the rows are taller than the screen and CLOSE ended up off it.
+            Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
                 Text("SESSION SUMMARY", color = Tac.Cyan, fontSize = 12.sp, fontWeight = FontWeight.Black, letterSpacing = 3.sp, fontFamily = Mono)
                 Spacer(Modifier.height(4.dp))
                 Text(name, color = Tac.TextHi, fontSize = 18.sp, fontWeight = FontWeight.Bold)
