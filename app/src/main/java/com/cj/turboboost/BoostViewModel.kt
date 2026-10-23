@@ -180,6 +180,10 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     var diagnostics by mutableStateOf(DiagnosticsUi())
         private set
 
+    /** Saved sessions for the comparison, newest last; null until the section is opened. */
+    var comparisonSessions by mutableStateOf<List<SessionRecord>?>(null)
+        private set
+
     /**
      * Per package, what the system ignored in this process's last restriction, for the
      * diagnostics panel. Null until a boost restricts; not kept across app restarts.
@@ -919,7 +923,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // -----------------------------------------------------------------------
-    // Diagnostics: read-only
+    // Diagnostics and session comparison: read-only
     // -----------------------------------------------------------------------
 
     /**
@@ -987,6 +991,13 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         val app = getApplication<Application>()
         val version = runCatching { app.packageManager.getPackageInfo(app.packageName, 0).versionName }.getOrNull() ?: "unknown"
         return DiagnosticsPanel.report(rows, version, ui.checkedAt ?: "unknown")
+    }
+
+    /** Reads the saved sessions for the comparison; nothing is written. */
+    fun loadComparison() {
+        viewModelScope.launch {
+            comparisonSessions = withContext(Dispatchers.IO) { sessions.all() }
+        }
     }
 
     // -----------------------------------------------------------------------

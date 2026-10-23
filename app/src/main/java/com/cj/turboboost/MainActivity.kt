@@ -163,7 +163,9 @@ class MainActivity : ComponentActivity() {
                     onResetRestricted = { viewModel.resetRestricted() },
                     diagnostics = viewModel.diagnostics,
                     onRunDiagnostics = { viewModel.runDiagnostics() },
-                    diagnosticsReport = { viewModel.diagnosticsReport() }
+                    diagnosticsReport = { viewModel.diagnosticsReport() },
+                    comparisonSessions = viewModel.comparisonSessions,
+                    onLoadComparison = { viewModel.loadComparison() }
                 )
             }
         }

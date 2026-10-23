@@ -59,13 +59,16 @@ import com.cj.turboboost.DisplayState
 import com.cj.turboboost.FpsCap
 import com.cj.turboboost.GameRegistry
 import com.cj.turboboost.GameResolutionUi
+import com.cj.turboboost.GroupStats
 import com.cj.turboboost.InstalledGame
 import com.cj.turboboost.LaunchableApp
 import com.cj.turboboost.RamInfo
 import com.cj.turboboost.RefreshRate
 import com.cj.turboboost.ResolutionLevel
 import com.cj.turboboost.RestrictEditorUi
+import com.cj.turboboost.SessionComparison
 import com.cj.turboboost.SessionRecord
+import com.cj.turboboost.SessionStore
 import com.cj.turboboost.SystemTelemetry
 import com.cj.turboboost.VpnState
 import kotlinx.coroutines.delay
@@ -172,7 +175,9 @@ fun BoosterScreen(
     onResetRestricted: () -> Unit,
     diagnostics: DiagnosticsUi,
     onRunDiagnostics: () -> Unit,
-    diagnosticsReport: () -> String?
+    diagnosticsReport: () -> String?,
+    comparisonSessions: List<SessionRecord>?,
+    onLoadComparison: () -> Unit
 ) {
     val context = LocalContext.current
     val busy = step != BoostStep.IDLE
@@ -325,6 +330,15 @@ fun BoosterScreen(
             Spacer(Modifier.height(12.dp))
 
             DiagnosticsSection(ui = diagnostics, onRun = onRunDiagnostics, report = diagnosticsReport)
+
+            Spacer(Modifier.height(12.dp))
+
+            SessionComparisonSection(
+                gamePackage = selectedGame,
+                gameLabel = selected?.label,
+                sessions = comparisonSessions,
+                onOpen = onLoadComparison
+            )
 
             Spacer(Modifier.height(12.dp))
         }
@@ -1619,6 +1633,138 @@ private fun DiagnosticsSection(ui: DiagnosticsUi, onRun: () -> Unit, report: () 
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session comparison: read-only, from the saved sessions
+// ---------------------------------------------------------------------------
+
+/**
+ * Two groups of the selected game's saved sessions side by side, grouped by refresh rate,
+ * render resolution and FPS cap. Medians only; a difference only with 3 runs in each group.
+ */
+@Composable
+private fun SessionComparisonSection(
+    gamePackage: String?,
+    gameLabel: String?,
+    sessions: List<SessionRecord>?,
+    onOpen: () -> Unit
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    /** The picked groups, by label. */
+    var pickA by rememberSaveable { mutableStateOf<String?>(null) }
+    var pickB by rememberSaveable { mutableStateOf<String?>(null) }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = Tac.Surface,
+        border = BorderStroke(1.dp, Tac.Line)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            SectionHeader("SESSION COMPARISON", expanded) {
+                expanded = !expanded
+                if (expanded) onOpen()
+            }
+            if (!expanded) return@Column
+            Spacer(Modifier.height(8.dp))
+            val groups = if (gamePackage != null && sessions != null) SessionComparison.groups(sessions, gamePackage) else null
+            when {
+                gamePackage == null -> Text("Pick a game to compare its sessions.", color = Tac.TextLo, fontSize = 12.sp)
+                groups == null -> Text("Reading saved sessions...", color = Tac.TextLo, fontSize = 12.sp)
+                groups.isEmpty() -> Text("No saved sessions for ${gameLabel ?: gamePackage} yet.", color = Tac.TextLo, fontSize = 12.sp)
+                else -> {
+                    val a = groups.firstOrNull { it.key.label == pickA } ?: groups[0]
+                    val b = groups.firstOrNull { it.key.label == pickB } ?: groups.getOrElse(1) { groups[0] }
+                    GroupPicker("A", groups, a) { pickA = it.key.label }
+                    Spacer(Modifier.height(6.dp))
+                    GroupPicker("B", groups, b) { pickB = it.key.label }
+                    Spacer(Modifier.height(10.dp))
+                    ComparisonTable(a, b)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Only the newest ${SessionStore.MAX_SESSIONS} sessions are kept. Each median uses only the runs " +
+                    "that recorded it; (n/m) is how many did.",
+                color = Tac.TextLo,
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun GroupPicker(name: String, groups: List<GroupStats>, picked: GroupStats, onPick: (GroupStats) -> Unit) {
+    Text("GROUP $name", color = Tac.TextLo, fontSize = 10.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Black)
+    groups.forEach { group ->
+        val selected = group == picked
+        Text(
+            "${if (selected) "\u25CF" else "\u25CB"} ${group.key.label} (${group.runs} ${if (group.runs == 1) "run" else "runs"})",
+            color = if (selected) Tac.Cyan else Tac.TextLo,
+            fontSize = 11.sp,
+            fontFamily = Mono,
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectable(selected = selected, role = Role.RadioButton, onClick = { onPick(group) })
+                .padding(vertical = 4.dp)
+        )
+    }
+}
+
+private fun withRuns(value: String?, had: Int, of: Int): String = value?.let { "$it ($had/$of)" } ?: "no data"
+
+private fun signed(value: Float): String = String.format(Locale.US, "%+.1f", value)
+
+private fun signedDuration(ms: Long): String = (if (ms < 0) "-" else "+") + durationText(kotlin.math.abs(ms))
+
+/** Metric rows for A and B, and B minus A only when both groups have 3 runs. */
+@Composable
+private fun ComparisonTable(a: GroupStats, b: GroupStats) {
+    val diff = SessionComparison.difference(a, b)
+    val short = listOf("A" to a, "B" to b).filter { !it.second.enoughRuns }
+    val rows = listOf(
+        Triple("Runs", "${a.runs}", "${b.runs}") to null,
+        Triple(
+            "Median avg FPS",
+            withRuns(a.avgFps?.let(::fpsText), a.avgFpsRuns, a.runs),
+            withRuns(b.avgFps?.let(::fpsText), b.avgFpsRuns, b.runs)
+        ) to diff?.avgFps?.let(::signed),
+        Triple(
+            "Median 1% low",
+            withRuns(a.onePercentLow?.let(::fpsText), a.onePercentLowRuns, a.runs),
+            withRuns(b.onePercentLow?.let(::fpsText), b.onePercentLowRuns, b.runs)
+        ) to diff?.onePercentLow?.let(::signed),
+        Triple(
+            "Median time to thermal 1",
+            withRuns(a.msToThermal1?.let(::durationText), a.reachedThermal1, a.runs),
+            withRuns(b.msToThermal1?.let(::durationText), b.reachedThermal1, b.runs)
+        ) to diff?.msToThermal1?.let(::signedDuration),
+        Triple("Never reached thermal 1", "${a.neverReachedThermal1}/${a.thermalRuns}", "${b.neverReachedThermal1}/${b.thermalRuns}") to null,
+        Triple("Worst max thermal", thermalText(a.worstThermal), thermalText(b.worstThermal)) to null
+    )
+    Row(Modifier.fillMaxWidth()) {
+        listOf("" to 1.3f, "A" to 1f, "B" to 1f, "B\u2212A" to 0.8f).forEach { (title, weight) ->
+            Text(title, modifier = Modifier.weight(weight), color = Tac.TextLo, fontSize = 10.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+        }
+    }
+    rows.forEach { (values, delta) ->
+        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+            Text(values.first, modifier = Modifier.weight(1.3f), color = Tac.TextLo, fontSize = 11.sp, lineHeight = 15.sp)
+            Text(values.second, modifier = Modifier.weight(1f), color = Tac.TextHi, fontSize = 11.sp, fontFamily = Mono, lineHeight = 15.sp)
+            Text(values.third, modifier = Modifier.weight(1f), color = Tac.TextHi, fontSize = 11.sp, fontFamily = Mono, lineHeight = 15.sp)
+            Text(delta ?: "", modifier = Modifier.weight(0.8f), color = Tac.Cyan, fontSize = 11.sp, fontFamily = Mono, lineHeight = 15.sp)
+        }
+    }
+    if (short.isNotEmpty()) {
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "No difference shown: " + short.joinToString(", ") { (name, g) -> "$name ${g.runs}/${SessionComparison.MIN_RUNS} runs" },
+            color = Tac.Amber,
+            fontSize = 11.sp,
+            lineHeight = 16.sp
+        )
     }
 }
 
