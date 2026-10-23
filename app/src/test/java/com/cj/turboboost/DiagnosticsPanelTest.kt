@@ -114,6 +114,16 @@ class DiagnosticsPanelTest {
     }
 
     @Test
+    fun `a session well below the cap on its own does not prove the cap`() {
+        // Measured on the test device: a lobby that runs at 30 under a 40 cap.
+        val slow = row(DiagnosticsPanel.rows(input(capAvg = 30.0f)), "FPS cap")
+        assertEquals(CheckStatus.UNVERIFIED, slow.status)
+        assertTrue(slow.evidence, slow.evidence.contains("30.0 FPS, below the cap"))
+        assertEquals(CheckStatus.SUPPORTED, row(DiagnosticsPanel.rows(input(capAvg = 34.5f)), "FPS cap").status)
+        assertEquals(CheckStatus.SUPPORTED, row(DiagnosticsPanel.rows(input(capAvg = 43.9f)), "FPS cap").status)
+    }
+
+    @Test
     fun `fps cap without --fps in help is unsupported, with the help as evidence`() {
         val noFps = help.lines().filterNot { it.contains("--fps") || it.contains("0 to disable") }.joinToString("\n")
         val result = row(DiagnosticsPanel.rows(input(helpOutput = noFps)), "FPS cap")
@@ -133,6 +143,10 @@ class DiagnosticsPanelTest {
         val measured = GameResolutionStatus(level = ResolutionLevel.LOWER, result = "Renders at 594x1353 (−32% pixels)")
         assertEquals(CheckStatus.SUPPORTED, row(DiagnosticsPanel.rows(input(status = measured)), "Downscale").status)
         assertEquals(CheckStatus.UNVERIFIED, row(DiagnosticsPanel.rows(input(status = measured.copy(result = null))), "Downscale").status)
+        // A size with no native one to compare: measured, but no reduction shown.
+        val noNative = row(DiagnosticsPanel.rows(input(status = measured.copy(result = "Renders at 594x1353"))), "Downscale")
+        assertEquals(CheckStatus.UNVERIFIED, noNative.status)
+        assertTrue(noNative.evidence, noNative.evidence.contains("no native size"))
         val noEffect = measured.copy(result = "No effect: game already renders below this")
         assertEquals(CheckStatus.UNVERIFIED, row(DiagnosticsPanel.rows(input(status = noEffect)), "Downscale").status)
         val outside = measured.copy(changedOutside = "standard")

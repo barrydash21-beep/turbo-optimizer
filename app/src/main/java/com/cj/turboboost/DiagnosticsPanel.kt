@@ -56,8 +56,9 @@ data class DiagnosticsInput(
 /** The read-only diagnostics panel: its rows, the `cmd game help` cache and the copied report. */
 object DiagnosticsPanel {
 
-    /** Within this much of the cap, a session's average counts as following it. */
+    /** Between these fractions of the cap, a session's average counts as following it. */
     private const val CAP_TOLERANCE = 1.1f
+    private const val CAP_FLOOR = 0.85f
 
     private val DOWNSCALE = Regex("""--downscale\s*\[([^\]]*)\]""")
 
@@ -168,6 +169,9 @@ object DiagnosticsPanel {
             status.pendingRestart -> DiagnosticRow(name, CheckStatus.UNVERIFIED, "$held read back; set while the game ran, applies at its next launch")
             status.result == null -> DiagnosticRow(name, CheckStatus.UNVERIFIED, "$held read back; render buffer not measured yet")
             status.result.startsWith("No effect") -> DiagnosticRow(name, CheckStatus.UNVERIFIED, "$held read back; ${status.result}")
+            // Only a comparison with the native size shows a reduction ("... (−32% pixels)").
+            !status.result.contains("pixels)") ->
+                DiagnosticRow(name, CheckStatus.UNVERIFIED, "$held read back; ${status.result}; no native size to compare with")
             else -> DiagnosticRow(name, CheckStatus.SUPPORTED, "$held read back; last measured buffer: ${status.result}")
         }
     }
@@ -193,6 +197,12 @@ object DiagnosticsPanel {
             status.changedOutside != null -> DiagnosticRow(name, CheckStatus.UNVERIFIED, "Cap ${cap.label} changed outside Turbo: now ${status.changedOutside}")
             status.resetByRestart -> DiagnosticRow(name, CheckStatus.UNVERIFIED, "Cap ${cap.label} reset by a phone restart; set again at the next launch from Turbo")
             avg == null -> DiagnosticRow(name, CheckStatus.UNVERIFIED, "Fps ${cap.label} read back; no session measured at this cap yet")
+            // Well below the cap the game ran slower on its own, which says nothing about the cap.
+            avg < cap.fps * CAP_FLOOR -> DiagnosticRow(
+                name,
+                CheckStatus.UNVERIFIED,
+                "Fps ${cap.label} read back; the last session averaged ${fps(avg)} FPS, below the cap on its own, so it does not show the cap working"
+            )
             avg <= cap.fps * CAP_TOLERANCE -> DiagnosticRow(name, CheckStatus.SUPPORTED, "Fps ${cap.label} read back; last session averaged ${fps(avg)} FPS")
             else -> DiagnosticRow(
                 name,
