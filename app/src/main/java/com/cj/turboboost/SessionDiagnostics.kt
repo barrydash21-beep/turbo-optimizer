@@ -43,7 +43,12 @@ data class SessionRecord(
      * checked" (restriction off, Shizuku down, or a record from before this existed).
      */
     val restrictedAliveEarly: List<String>? = null,
-    val restrictedAliveAtEnd: List<String>? = null
+    val restrictedAliveAtEnd: List<String>? = null,
+    /**
+     * The frame-rate cap held when the game was first seen ([GameResolution.sessionFpsCap]),
+     * or null for none, including every record from before the cap existed.
+     */
+    val fpsCap: Int? = null
 ) {
     /** Average FPS is more than 15% below the chosen rate, or the device reached "moderate". */
     val struggled: Boolean
@@ -53,12 +58,12 @@ data class SessionRecord(
         packageName, RefreshRate.format(refreshRate), startedAtMs, durationMs,
         avgFps?.let { fmt(it) }, onePercentLowFps?.let { fmt(it) }, msToThermal1, maxThermal,
         samples, fpsSamples, thermalSamples, observedPeak?.let { RefreshRate.format(it) }, renderResolution,
-        encodeList(restrictedAliveEarly), encodeList(restrictedAliveAtEnd)
+        encodeList(restrictedAliveEarly), encodeList(restrictedAliveAtEnd), fpsCap
     ).joinToString(SEP) { it?.toString() ?: "" }
 
     companion object {
         private const val SEP = "|"
-        private const val FIELDS = 15
+        private const val FIELDS = 16
 
         /** Records saved before [observedPeak] existed. */
         private const val FIELDS_V1 = 11
@@ -68,6 +73,9 @@ data class SessionRecord(
 
         /** Records saved before [restrictedAliveEarly] and [restrictedAliveAtEnd] existed. */
         private const val FIELDS_V3 = 13
+
+        /** Records saved before [fpsCap] existed. */
+        private const val FIELDS_V4 = 15
 
         /** Written for an empty list, so it stays apart from null (an empty field). */
         private const val NONE = "-"
@@ -85,7 +93,7 @@ data class SessionRecord(
         /** Null for a line that is not a complete record. */
         fun decode(line: String): SessionRecord? {
             val f = line.split(SEP)
-            if (f.size !in setOf(FIELDS, FIELDS_V3, FIELDS_V2, FIELDS_V1) || f[0].isBlank()) return null
+            if (f.size !in setOf(FIELDS, FIELDS_V4, FIELDS_V3, FIELDS_V2, FIELDS_V1) || f[0].isBlank()) return null
             return runCatching {
                 SessionRecord(
                     packageName = f[0],
@@ -102,7 +110,8 @@ data class SessionRecord(
                     observedPeak = f.getOrNull(11)?.toFloatOrNull(),
                     renderResolution = f.getOrNull(12)?.takeIf { it.isNotBlank() },
                     restrictedAliveEarly = decodeList(f.getOrNull(13)),
-                    restrictedAliveAtEnd = decodeList(f.getOrNull(14))
+                    restrictedAliveAtEnd = decodeList(f.getOrNull(14)),
+                    fpsCap = f.getOrNull(15)?.toIntOrNull()
                 )
             }.getOrNull()
         }
@@ -250,6 +259,9 @@ class SessionAccumulator(
     var restrictedAliveEarly: List<String>? = null
     var restrictedAliveAtEnd: List<String>? = null
 
+    /** Set once by the monitor when the session starts; see [SessionRecord.fpsCap]. */
+    var fpsCap: Int? = null
+
     /** The newest frame already counted, so the next latency dump is read from after it. */
     val lastPresent: Long get() = lastPresentNs
 
@@ -284,7 +296,8 @@ class SessionAccumulator(
         observedPeak = observedPeak,
         renderResolution = renderResolution,
         restrictedAliveEarly = restrictedAliveEarly,
-        restrictedAliveAtEnd = restrictedAliveAtEnd
+        restrictedAliveAtEnd = restrictedAliveAtEnd,
+        fpsCap = fpsCap
     )
 }
 

@@ -170,7 +170,9 @@ class GameMonitorService : Service() {
                             session = it
                             lastSampleAt = now
                             // Read once: a preset change reaches the game only at its next launch.
-                            it.renderResolution = GameResolution.sessionValue(Stores.gameResolution(applicationContext), gamePackage)
+                            val resolution = Stores.gameResolution(applicationContext)
+                            it.renderResolution = GameResolution.sessionValue(resolution, gamePackage)
+                            it.fpsCap = GameResolution.sessionFpsCap(resolution, gamePackage)
                         }
                     if (now - lastSampleAt >= SAMPLE_MS) {
                         lastSampleAt = now
