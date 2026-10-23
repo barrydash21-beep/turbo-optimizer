@@ -569,14 +569,17 @@ private fun FpsCapRow(
             fontSize = 11.sp,
             fontFamily = Mono
         )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "Android reads back Fps ${cap.label} for $gameLabel. That does not prove the game follows it; " +
-                "the measured average after a session does.",
-            color = Tac.TextLo,
-            fontSize = 11.sp,
-            lineHeight = 16.sp
-        )
+        // Only while the game holds exactly what Turbo set; otherwise the resolution row says what changed.
+        if (status.changedOutside == null && !status.resetByRestart) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Android reads back Fps ${cap.label} for $gameLabel. That does not prove the game follows it; " +
+                    "the measured average after a session does.",
+                color = Tac.TextLo,
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+        }
     }
 }
 
@@ -1751,7 +1754,7 @@ private fun ComparisonTable(a: GroupStats, b: GroupStats) {
     }
     rows.forEach { (values, delta) ->
         Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-            Text(values.first, modifier = Modifier.weight(1.3f), color = Tac.TextLo, fontSize = 11.sp, lineHeight = 15.sp)
+            Text(values.first, modifier = Modifier.weight(1.3f).padding(end = 8.dp), color = Tac.TextLo, fontSize = 11.sp, lineHeight = 15.sp)
             Text(values.second, modifier = Modifier.weight(1f), color = Tac.TextHi, fontSize = 11.sp, fontFamily = Mono, lineHeight = 15.sp)
             Text(values.third, modifier = Modifier.weight(1f), color = Tac.TextHi, fontSize = 11.sp, fontFamily = Mono, lineHeight = 15.sp)
             Text(delta ?: "", modifier = Modifier.weight(0.8f), color = Tac.Cyan, fontSize = 11.sp, fontFamily = Mono, lineHeight = 15.sp)
