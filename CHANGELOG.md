@@ -21,7 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frame timing is read every 2 s while the helper runs, instead of every 30 s. When the helper can't start, the app monitors the session itself as before.
 - A session ends in two steps: it is marked as ending before anything is put back, and as ended only once every setting reads back. One left unfinished (the app was closed, or a setting didn't stick) is finished the next time any path ends it, including the next app start, without saving its record twice.
 - Putting the refresh rate back is now checked by reading it back.
-- A session in which the game's process restarted is marked "game restarted" in its summary and left out of the Session comparison.
+- A session in which the game's process restarted is marked "game restarted" in its summary and left out of the Session comparison. A new process only counts as a restart when the game is in front; one that appears in the background after the game is closed (seen on HiOS 16, about 3 s after swiping it away) ends the session as closed.
+- A session, boosted or baseline, starts once the game is the app in front, not when a process of it is found running in the background.
+- Gaps of 1 s or more between two frames are pauses (loading, menus) and are left out of average FPS and 1% low; the summary shows how many there were and how long they lasted in all. Before, one loading screen counted as one long frame and took a session's 1% low to about 2 FPS.
+- Each session keeps its frames per second for up to 30 minutes, with seconds the reads missed left empty rather than 0, and up to 100 pauses with their times. It also records the battery temperature at its start and end.
 
 ## [1.2.4] - 2026-10-23
 

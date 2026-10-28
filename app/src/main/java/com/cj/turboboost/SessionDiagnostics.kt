@@ -69,7 +69,25 @@ data class SessionRecord(
      * How much of the session was sampled, 0 to 1: reads taken over reads due at the cadence
      * they ran at. Null when too short to say, or recorded before this existed.
      */
-    val continuity: Float? = null
+    val continuity: Float? = null,
+    /**
+     * Gaps of [Diagnostics.PAUSE_NS] or more between two frames: the game was not drawing
+     * (loading, menus). Left out of [avgFps] and [onePercentLowFps]; counted and timed here.
+     * Null for records from before this existed.
+     */
+    val pauseCount: Int? = null,
+    val pauseMs: Long? = null,
+    /**
+     * Frames presented in each second, from the first frame seen, at most
+     * [SessionAccumulator.MAX_SERIES_S] seconds: `60,59,,0`. Empty is a second the reads
+     * missed; 0 is a second with no frame (a pause).
+     */
+    val fpsSeries: String? = null,
+    /** Pauses as `<s from the first frame>:<ms>`, `;`-separated, at most [SessionAccumulator.MAX_PAUSES]. */
+    val pauses: String? = null,
+    /** Battery temperature in degrees C (`dumpsys battery`) when the session started and ended. */
+    val batteryTempStart: Float? = null,
+    val batteryTempEnd: Float? = null
 ) {
     val gameRestarted: Boolean get() = endReason == EndReason.RESTARTED.code
 
@@ -93,7 +111,8 @@ data class SessionRecord(
         avgFps?.let { fmt(it) }, onePercentLowFps?.let { fmt(it) }, msToThermal1, maxThermal,
         samples, fpsSamples, thermalSamples, observedPeak?.let { RefreshRate.format(it) }, renderResolution,
         encodeList(restrictedAliveEarly), encodeList(restrictedAliveAtEnd), fpsCap, endReason,
-        profile, gameStateStart, gameStateEnd, contamination, continuity?.let { fmt(it) }
+        profile, gameStateStart, gameStateEnd, contamination, continuity?.let { fmt(it) },
+        pauseCount, pauseMs, fpsSeries, pauses, batteryTempStart?.let { temp(it) }, batteryTempEnd?.let { temp(it) }
     ).joinToString(SEP) { it?.toString() ?: "" }
 
     companion object {
@@ -101,7 +120,10 @@ data class SessionRecord(
         const val BASELINE = "BASELINE"
 
         private const val SEP = "|"
-        private const val FIELDS = 22
+        private const val FIELDS = 28
+
+        /** Records saved before the pause, series and battery fields existed. */
+        private const val FIELDS_V7 = 22
 
         /** Records saved before [profile] and the game-state fields existed. */
         private const val FIELDS_V6 = 17
@@ -134,10 +156,12 @@ data class SessionRecord(
 
         private fun fmt(v: Float) = String.format(Locale.US, "%.2f", v)
 
+        private fun temp(v: Float) = String.format(Locale.US, "%.1f", v)
+
         /** Null for a line that is not a complete record. */
         fun decode(line: String): SessionRecord? {
             val f = line.split(SEP)
-            if (f.size !in setOf(FIELDS, FIELDS_V6, FIELDS_V5, FIELDS_V4, FIELDS_V3, FIELDS_V2, FIELDS_V1) || f[0].isBlank()) return null
+            if (f.size !in setOf(FIELDS, FIELDS_V7, FIELDS_V6, FIELDS_V5, FIELDS_V4, FIELDS_V3, FIELDS_V2, FIELDS_V1) || f[0].isBlank()) return null
             return runCatching {
                 SessionRecord(
                     packageName = f[0],
@@ -161,7 +185,13 @@ data class SessionRecord(
                     gameStateStart = f.getOrNull(18)?.takeIf { it.isNotBlank() },
                     gameStateEnd = f.getOrNull(19)?.takeIf { it.isNotBlank() },
                     contamination = f.getOrNull(20)?.takeIf { it.isNotBlank() },
-                    continuity = f.getOrNull(21)?.toFloatOrNull()
+                    continuity = f.getOrNull(21)?.toFloatOrNull(),
+                    pauseCount = f.getOrNull(22)?.toIntOrNull(),
+                    pauseMs = f.getOrNull(23)?.toLongOrNull(),
+                    fpsSeries = f.getOrNull(24)?.takeIf { it.isNotBlank() },
+                    pauses = f.getOrNull(25)?.takeIf { it.isNotBlank() },
+                    batteryTempStart = f.getOrNull(26)?.toFloatOrNull(),
+                    batteryTempEnd = f.getOrNull(27)?.toFloatOrNull()
                 )
             }.getOrNull()
         }
@@ -179,6 +209,26 @@ object Diagnostics {
 
     /** A 1% low needs at least 100 intervals to mean anything. */
     const val MIN_INTERVALS_FOR_LOW = 100
+
+    /**
+     * A gap between two frames this long or longer is a pause: the game was not drawing
+     * (loading, menus), not a slow frame. Without this, one 10 s loading screen counted as one
+     * 10 s frame and took a session's 1% low to 2 fps (seen on the Pova 7).
+     */
+    const val PAUSE_NS = 1_000_000_000L
+
+    /** `temperature: 377` from `dumpsys battery`, in tenths of a degree: 37.7. Null when absent. */
+    fun parseBatteryTemp(dump: String?): Float? =
+        dump?.lineSequence()?.map { it.trim() }?.firstOrNull { it.startsWith("temperature:") }
+            ?.substringAfter(':')?.trim()?.toIntOrNull()?.let { it / 10f }
+
+    /**
+     * Whether [packageName] is the app in front, from `dumpsys activity activities`:
+     * `topResumedActivity=ActivityRecord{204793081 u0 com.foo/.Main t831}`.
+     */
+    fun inFront(dump: String?, packageName: String): Boolean =
+        dump?.lineSequence()?.firstOrNull { it.trim().startsWith("topResumedActivity=") }
+            ?.contains(" $packageName/") == true
 
     /**
      * The "Thermal Status: N" value from `dumpsys thermalservice`, or null when it is
@@ -293,8 +343,32 @@ class SessionAccumulator(
     val startedAtMs: Long,
     private val startedElapsedMs: Long
 ) {
+    companion object {
+        /** Seconds of [SessionRecord.fpsSeries] kept: 30 minutes. */
+        const val MAX_SERIES_S = 1_800
+
+        /** Pauses kept in [SessionRecord.pauses]; all are counted. */
+        const val MAX_PAUSES = 100
+
+        private const val NS_PER_S = 1_000_000_000L
+    }
+
+    /** Frame intervals shorter than [Diagnostics.PAUSE_NS]: what FPS and the 1% low are taken over. */
     private val intervals = mutableListOf<Long>()
     private var lastPresentNs = 0L
+
+    /** The first frame counted, which second 0 of the series starts at. */
+    private var firstFrameNs: Long? = null
+    private val framesPerSecond = mutableMapOf<Int, Int>()
+
+    /** Stretches between two reads that did not follow on: frames there were missed, not absent. */
+    private val gaps = mutableListOf<LongRange>()
+    private var pauseCount = 0
+    private var pauseNs = 0L
+    private val pauseList = mutableListOf<Pair<Long, Long>>()
+
+    /** Battery temperature when the session started; see [SessionRecord.batteryTempStart]. */
+    var batteryTempStart: Float? = null
     private var samples = 0
     private var fpsSamples = 0
     private var thermalSamples = 0
@@ -315,7 +389,13 @@ class SessionAccumulator(
     /** The newest frame already counted, so the next latency dump is read from after it. */
     val lastPresent: Long get() = lastPresentNs
 
-    fun addSample(nowElapsedMs: Long, thermal: Int?, presents: List<Long>, peak: Float? = null) {
+    /**
+     * One read. [presents] are its frames, oldest first. With [chained], the first of them is
+     * the previous read's last frame, put in front so the gap between the two reads is
+     * measured; it is not counted again. Without it, the stretch since the previous read's last
+     * frame was not seen.
+     */
+    fun addSample(nowElapsedMs: Long, thermal: Int?, presents: List<Long>, peak: Float? = null, chained: Boolean = false) {
         samples++
         if (peak != null) observedPeak = maxOf(observedPeak ?: peak, peak)
         if (thermal != null) {
@@ -323,12 +403,53 @@ class SessionAccumulator(
             maxThermal = maxOf(maxThermal ?: thermal, thermal)
             if (thermal >= 1 && msToThermal1 == null) msToThermal1 = nowElapsedMs - startedElapsedMs
         }
+        val fresh = if (chained) presents.drop(1) else presents
+        if (fresh.isEmpty()) return
+        if (!chained && lastPresentNs > 0L && fresh.first() > lastPresentNs) gaps += lastPresentNs..fresh.first()
+        fresh.forEach(::countFrame)
+
         val sampleIntervals = Diagnostics.intervals(presents)
+        var at = presents.first()
+        for (d in sampleIntervals) {
+            if (d >= Diagnostics.PAUSE_NS) notePause(at, d)
+            at += d
+        }
         if (sampleIntervals.size >= Diagnostics.MIN_INTERVALS_PER_SAMPLE) {
             fpsSamples++
-            intervals += sampleIntervals
+            intervals += sampleIntervals.filter { it < Diagnostics.PAUSE_NS }
         }
-        presents.lastOrNull()?.let { lastPresentNs = maxOf(lastPresentNs, it) }
+        lastPresentNs = maxOf(lastPresentNs, fresh.last())
+    }
+
+    private fun countFrame(presentNs: Long) {
+        val first = firstFrameNs ?: presentNs.also { firstFrameNs = it }
+        val second = ((presentNs - first) / NS_PER_S).toInt()
+        if (second in 0 until MAX_SERIES_S) framesPerSecond[second] = (framesPerSecond[second] ?: 0) + 1
+    }
+
+    private fun notePause(startNs: Long, lengthNs: Long) {
+        pauseCount++
+        pauseNs += lengthNs
+        if (pauseList.size < MAX_PAUSES) pauseList += startNs to lengthNs
+    }
+
+    /** `60,59,,0`: frames per second from the first frame, empty where a gap between reads overlaps it. */
+    private fun series(): String? {
+        val first = firstFrameNs ?: return null
+        val lastSecond = ((lastPresentNs - first) / NS_PER_S).toInt().coerceAtMost(MAX_SERIES_S - 1)
+        return (0..lastSecond).joinToString(",") { s ->
+            val from = first + s * NS_PER_S
+            val until = from + NS_PER_S
+            // A second a gap covers any part of was not fully seen: its count would undercount.
+            val missed = gaps.any { it.first < until && it.last > from }
+            if (missed) "" else (framesPerSecond[s] ?: 0).toString()
+        }
+    }
+
+    private fun pausesText(): String? {
+        val first = firstFrameNs ?: return null
+        return pauseList.joinToString(";") { (start, length) -> "${(start - first) / NS_PER_S}:${length / 1_000_000L}" }
+            .ifEmpty { null }
     }
 
     fun finish(nowElapsedMs: Long): SessionRecord = SessionRecord(
@@ -338,6 +459,11 @@ class SessionAccumulator(
         durationMs = (nowElapsedMs - startedElapsedMs).coerceAtLeast(0L),
         avgFps = Diagnostics.averageFps(intervals),
         onePercentLowFps = Diagnostics.onePercentLow(intervals),
+        pauseCount = pauseCount,
+        pauseMs = pauseNs / 1_000_000L,
+        fpsSeries = series(),
+        pauses = pausesText(),
+        batteryTempStart = batteryTempStart,
         msToThermal1 = msToThermal1,
         maxThermal = maxThermal,
         samples = samples,

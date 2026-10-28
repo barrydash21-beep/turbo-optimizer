@@ -267,7 +267,6 @@ class SessionStoreTest {
             gameStateEnd = "custom;4=0.6/60", contamination = Contamination.CONTAMINATED.name, continuity = 0.97f
         )
         val fields = full.encode().split('|')
-        assertEquals(22, fields.size)
         assertEquals(listOf("BASELINE", "standard", "custom;4=0.6/60", "CONTAMINATED", "0.97"), fields.subList(17, 22))
         assertEquals(full, SessionRecord.decode(full.encode()))
         // A record from the build before: 17 fields, none of these.
@@ -276,6 +275,36 @@ class SessionStoreTest {
         assertNull(v6.profile)
         assertNull(v6.continuity)
         assertFalse(v6.isBaseline)
+    }
+
+    @Test
+    fun `pauses, the fps series and battery temperatures round trip as fields 23 to 28`() {
+        val full = record(18L).copy(
+            pauseCount = 2, pauseMs = 12_500L, fpsSeries = "60,59,,0,58", pauses = "3:10000;41:2500",
+            batteryTempStart = 37.7f, batteryTempEnd = 39.2f
+        )
+        val fields = full.encode().split('|')
+        assertEquals(28, fields.size)
+        assertEquals(listOf("2", "12500", "60,59,,0,58", "3:10000;41:2500", "37.7", "39.2"), fields.subList(22, 28))
+        assertEquals(full, SessionRecord.decode(full.encode()))
+        // A record from the build before: 22 fields, none of these.
+        val v7 = SessionRecord.decode(fields.subList(0, 22).joinToString("|"))!!
+        assertNull(v7.pauseCount)
+        assertNull(v7.fpsSeries)
+        assertNull(v7.batteryTempStart)
+    }
+
+    @Test
+    fun `battery temperature and the app in front are read from their dumps`() {
+        assertEquals(37.7f, Diagnostics.parseBatteryTemp("  AC powered: false\n  level: 49\n  temperature: 377\n")!!, 0.001f)
+        assertNull(Diagnostics.parseBatteryTemp("level: 49"))
+        val activities = "  topResumedActivity=ActivityRecord{204793081 u0 com.example.game/.Main t831}\n" +
+            "  mResumedActivity: ActivityRecord{1 u0 com.example.other/.Main t2}"
+        assertTrue(Diagnostics.inFront(activities, FAKE_GAME))
+        assertFalse(Diagnostics.inFront(activities, "com.example.other"))
+        // A package whose name only starts the same is not the game.
+        assertFalse(Diagnostics.inFront(activities.replace("com.example.game/", "com.example.games/"), FAKE_GAME))
+        assertFalse(Diagnostics.inFront(null, FAKE_GAME))
     }
 
     @Test

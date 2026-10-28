@@ -349,7 +349,14 @@ object SessionEnd {
         } else {
             continuity(record.samples, record.durationMs, GameMonitorService.SAMPLE_MS)
         }
+        val batteryEnd = if (watched != null) {
+            watched.batteryEnd
+        } else {
+            ctx.shell.takeIf { it.isAvailable() }?.let { Diagnostics.parseBatteryTemp(it.capture("dumpsys battery")) }
+        }
         return record.copy(
+            batteryTempStart = watched?.batteryStart ?: record.batteryTempStart,
+            batteryTempEnd = batteryEnd,
             endReason = watched?.endReason ?: reasonCode,
             profile = store.getString(KEY_KIND),
             gameStateStart = store.getString(KEY_STATE_START),

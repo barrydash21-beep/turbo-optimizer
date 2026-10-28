@@ -10,11 +10,16 @@ import java.util.Base64
  * relies on.
  *
  * Every [TICK_MS] it checks `pidof`; every [FRAME_READ_MS] it appends the game's newly presented
- * frames, every [THERMAL_READ_S] the thermal status and `peak_refresh_rate`, all to [DATA].
- * When the game is gone for [MISSES_TO_EXIT] checks in a row, its process changes, or it never
- * appears within [LAUNCH_GRACE_S], it makes a synchronous `content call` into
+ * frames, every [THERMAL_READ_S] the thermal status and `peak_refresh_rate`, all to [DATA], with
+ * the battery temperature at the start and the end. The session starts once the game is the app
+ * in front, not when a process of it is found in the background. When the game is gone for
+ * [MISSES_TO_EXIT] checks in a row, its process changes, or it is not in front within
+ * [LAUNCH_GRACE_S], it makes a synchronous `content call` into
  * [SessionProvider], which thaws this app (HiOS lets a sync binder call through; it holds a
  * broadcast back), and the app ends the session itself. The watcher never restores anything.
+ *
+ * A changed process is a restart only when the game is in front: on the Pova 7 the game comes
+ * back as a new background process about 3 s after it is swiped away, which is an exit.
  *
  * It stops on its own after [MAX_LIFETIME_S], or at its next tick once [TOKEN] is gone, which
  * is how the app stops it. The token is the session's, and the provider refuses a call without
@@ -93,6 +98,8 @@ object SessionWatcher {
               dumpsys thermalservice 2>/dev/null | awk '/IsStatusOverride: true/ { o = 1 } /Thermal Status:/ && s == "" { s = @3 }
                 END { if (o) print "o"; else if (s == "") print "-"; else print s }'
             }
+            front() { dumpsys activity activities 2>/dev/null | grep -m1 'topResumedActivity=' | grep -qF " @P/"; }
+            battery() { dumpsys battery 2>/dev/null | awk '/temperature:/ { print @2; exit }'; }
             T0=@(ms); G=; M=0; L=; LR=-999999; LAST=0; LF=-999999; LT=-999999; R=
             while :; do
               [ -f @B.token ] || { rm -f @B.pid; exit 0; }
@@ -101,10 +108,19 @@ object SessionWatcher {
               p=" @(pidof @P) "
               if [ "@p" != "  " ]; then
                 if [ -z "@G" ]; then
-                  G=@(echo @p); G=@{G%% *}; echo "S @T @G" >> @D
+                  # A process in the background is not a session: it starts once the game is in front.
+                  if front; then G=@(echo @p); G=@{G%% *}; echo "S @T @G" >> @D; echo "B @T @(battery)" >> @D; fi
                 else
-                  case "@p" in *" @G "*) ;; *) R=restarted; break ;; esac
+                  # A new process: relaunched in front is a restart; one in the background is the
+                  # system starting the game again after it closed.
+                  case "@p" in *" @G "*) ;; *) if front; then R=restarted; else R=exited; fi; break ;; esac
                 fi
+              elif [ -n "@G" ]; then
+                M=@((M + 1)); [ @M -ge $MISSES_TO_EXIT ] && { R=exited; break; }
+              fi
+              if [ -z "@G" ]; then
+                [ @((T - T0)) -ge ${LAUNCH_GRACE_S * 1000} ] && { R=never_started; break; }
+              elif [ "@p" != "  " ]; then
                 M=0
                 if [ $FRAME_READ_MS -gt 0 ] && [ @((T - LF)) -ge $FRAME_READ_MS ]; then
                   LF=@T
@@ -125,16 +141,14 @@ object SessionWatcher {
                 if [ @((T - LT)) -ge ${THERMAL_READ_S * 1000} ]; then
                   LT=@T; echo "T @T @(thermal)" >> @D; echo "P @T @(settings get system peak_refresh_rate 2>/dev/null)" >> @D
                 fi
-              elif [ -n "@G" ]; then
-                M=@((M + 1)); [ @M -ge $MISSES_TO_EXIT ] && { R=exited; break; }
-              elif [ @((T - T0)) -ge ${LAUNCH_GRACE_S * 1000} ]; then
-                R=never_started; break
               fi
               # Only what is left of the tick: a plain sleep adds the work above to every tick.
               w=@((T + $TICK_MS - @(ms)))
               [ @w -gt 0 ] && sleep @((w / 1000)).@(printf %03d @((w % 1000)))
             done
-            echo "E @(ms) @R" >> @D
+            E=@(ms)
+            [ -n "@G" ] && echo "B @E @(battery)" >> @D
+            echo "E @E @R" >> @D
             i=0
             while [ -f @B.token ] && [ @i -lt $END_RETRIES ]; do
               out=@(content call --uri content://@A --method ${SessionProvider.METHOD_END} --arg "@(cat @B.token)" --extra reason:s:@R 2>&1)
@@ -183,6 +197,7 @@ object SessionWatcher {
         var endAt: Long? = null
         var reason: String? = null
         var lastAt: Long? = null
+        val batteries = mutableListOf<Float>()
         val events = mutableListOf<WatcherEvent>()
         for (line in text.lineSequence()) {
             val f = line.trim().split(' ').filter { it.isNotEmpty() }
@@ -204,6 +219,8 @@ object SessionWatcher {
                         events += WatcherEvent.Thermal(at, null, false, peak)
                     }
                 }
+                // Tenths of a degree, as `dumpsys battery` prints it.
+                "B" -> f.getOrNull(2)?.toIntOrNull()?.let { batteries += it / 10f }
                 "E" -> if (endAt == null) {
                     endAt = at
                     reason = f.getOrNull(2)?.takeIf { EndReason.fromCode(it) != null }
@@ -212,7 +229,11 @@ object SessionWatcher {
             }
             lastAt = maxOf(lastAt ?: at, at)
         }
-        return WatcherData(seenAt, pid, endAt, reason, lastAt, events)
+        return WatcherData(
+            seenAt, pid, endAt, reason, lastAt, events,
+            batteryStart = batteries.firstOrNull(),
+            batteryEnd = batteries.drop(1).lastOrNull()
+        )
     }
 
     /** `F <ms> <contiguous> <rows> [<first> <delta>...]`, the deltas in ns from the frame before. */
@@ -247,7 +268,10 @@ data class WatcherData(
     val endReason: String?,
     /** The newest time on any line. */
     val lastAtMs: Long?,
-    val events: List<WatcherEvent>
+    val events: List<WatcherEvent>,
+    /** Battery temperature in degrees C when the game came to the front, and when the watcher ended. */
+    val batteryStart: Float? = null,
+    val batteryEnd: Float? = null
 ) {
     val frameReads: Int get() = events.count { it is WatcherEvent.Frames }
 
@@ -262,8 +286,8 @@ data class WatcherData(
             when (event) {
                 is WatcherEvent.Frames -> {
                     val fresh = event.presentsNs.filter { it > newest }.sorted()
-                    val chain = if (event.contiguous && newest > 0L && fresh.isNotEmpty()) listOf(newest) + fresh else fresh
-                    session.addSample(event.atMs, null, chain)
+                    val chained = event.contiguous && newest > 0L && fresh.isNotEmpty()
+                    session.addSample(event.atMs, null, if (chained) listOf(newest) + fresh else fresh, chained = chained)
                     fresh.lastOrNull()?.let { newest = it }
                 }
                 is WatcherEvent.Thermal -> session.addSample(event.atMs, event.status, emptyList(), event.peak)

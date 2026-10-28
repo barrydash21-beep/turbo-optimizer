@@ -400,6 +400,23 @@ class SessionEndTest {
     }
 
     @Test
+    fun `the battery temperatures and pauses reach the record`() {
+        boost()
+        shell.data = listOf(
+            "S 100000 4242",
+            "B 100000 377",
+            "F 102000 0 128 1000000000000" + " $frameNs".repeat(119),
+            "B 150000 392",
+            "E 150000 exited"
+        ).joinToString("\n")
+        val record = SessionEnd.finish(ctx, EndReason.EXITED).record!!
+        assertEquals(37.7f, record.batteryTempStart!!, 0.001f)
+        assertEquals(39.2f, record.batteryTempEnd!!, 0.001f)
+        assertEquals(0, record.pauseCount)
+        assertEquals("60,60", record.fpsSeries)
+    }
+
+    @Test
     fun `a session that restarted is left out of the comparison`() {
         fun run(at: Long, end: String?) = SessionRecord(
             FAKE_GAME, 60f, at, 300_000L, 58f, 40f, null, 0, 10, 10, 10, renderResolution = "default", endReason = end

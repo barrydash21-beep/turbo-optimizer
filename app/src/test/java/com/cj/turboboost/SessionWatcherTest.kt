@@ -26,8 +26,12 @@ class SessionWatcherTest {
         assertTrue(script.contains("-ge ${SessionWatcher.THERMAL_READ_S * 1000} ]"))
         assertTrue(script.contains("-ge ${SessionWatcher.LAUNCH_GRACE_S * 1000} ]"))
         assertTrue(script.contains("[ \$M -ge ${SessionWatcher.MISSES_TO_EXIT} ]"))
-        // A changed pid ends the session as a restart.
-        assertTrue(script.contains("*\" \$G \"*) ;; *) R=restarted; break ;;"))
+        // A changed pid is a restart in front, an exit in the background.
+        assertTrue(script.contains("*\" \$G \"*) ;; *) if front; then R=restarted; else R=exited; fi; break ;;"))
+        // The session starts only once the game is in front, with the battery temperature.
+        assertTrue(script.contains("if front; then G=\$(echo \$p); G=\${G%% *}; echo \"S \$T \$G\" >> \$D; echo \"B \$T \$(battery)\" >> \$D; fi"))
+        assertTrue(script.contains("grep -m1 'topResumedActivity=' | grep -qF \" \$P/\""))
+        assertTrue(script.contains("[ -n \"\$G\" ] && echo \"B \$E \$(battery)\" >> \$D"))
         // The token is read from its file for each call, never put on a command line by the app.
         assertTrue(script.contains("content call --uri content://\$A --method end --arg \"\$(cat \$B.token)\" --extra reason:s:\$R"))
         // The tick sleeps only what is left of it, so reads stay on the cadence.
@@ -133,6 +137,73 @@ class SessionWatcherTest {
         val record = session.finish(4_000L)
         // The 2 worst of 239 intervals are 80 ms and 16.7 ms: 20.7 fps, against 60 without the stall.
         assertEquals(20.7f, record.onePercentLowFps!!, 0.1f)
+    }
+
+    @Test
+    fun `a pause between reads that follow on is a pause, not a frame, and the series shows it as 0`() {
+        val start = 1_000_000_000_000L
+        val pause = 10_000_000_000L
+        val text = listOf(
+            "S 0 1",
+            "B 0 377",
+            frames(2_000, contiguous = false, first = start, count = 120),
+            // A loading screen: nothing drawn for 10 s, then the read still follows on.
+            frames(14_000, contiguous = true, first = start + 119 * frameNs + pause, count = 120),
+            "B 16000 391",
+            "E 16000 exited"
+        ).joinToString("\n")
+        val data = SessionWatcher.parse(text)
+        assertEquals(37.7f, data.batteryStart!!, 0.001f)
+        assertEquals(39.1f, data.batteryEnd!!, 0.001f)
+
+        val session = SessionAccumulator(FAKE_GAME, 60f, 0L, 0L)
+        data.foldInto(session)
+        val record = session.finish(16_000L)
+
+        // Without the pause rule the 10 s would be one frame: 1% low near 0.2 fps.
+        assertEquals(60f, record.avgFps!!, 0.05f)
+        assertEquals(60f, record.onePercentLowFps!!, 0.05f)
+        assertEquals(1, record.pauseCount)
+        assertEquals(10_000L, record.pauseMs)
+        assertEquals("1:10000", record.pauses)
+        // 2 s of frames, about 10 s of nothing, then 2 s more: drawn seconds, then zeros.
+        val series = record.fpsSeries!!.split(',')
+        assertEquals("60", series[0])
+        assertEquals("0", series[5])
+        assertEquals(14, series.size)
+    }
+
+    @Test
+    fun `a stretch the reads missed is unknown in the series, never 0`() {
+        val start = 1_000_000_000_000L
+        val text = listOf(
+            "S 0 1",
+            frames(2_000, contiguous = false, first = start, count = 120),
+            // Not following on: frames between the two reads were missed.
+            frames(9_000, contiguous = false, first = start + 5_000_000_000L, count = 120)
+        ).joinToString("\n")
+        val session = SessionAccumulator(FAKE_GAME, 60f, 0L, 0L)
+        SessionWatcher.parse(text).foldInto(session)
+        val record = session.finish(9_000L)
+        val series = record.fpsSeries!!.split(',')
+        assertEquals("", series[3])
+        assertEquals(0, record.pauseCount)
+        assertTrue(series[0].toInt() >= 59)
+    }
+
+    @Test
+    fun `the series and the pause list stop at their caps, and every pause is still counted`() {
+        val session = SessionAccumulator(FAKE_GAME, 60f, 0L, 0L)
+        val second = 1_000_000_000L
+        // One frame every 2 s for an hour: each gap is a pause.
+        val presents = (0 until 1_800).map { 1_000_000_000_000L + it * 2 * second }
+        session.addSample(0L, null, presents)
+        val record = session.finish(3_600_000L)
+        assertEquals(SessionAccumulator.MAX_SERIES_S, record.fpsSeries!!.split(',').size)
+        assertEquals(SessionAccumulator.MAX_PAUSES, record.pauses!!.split(';').size)
+        assertEquals(1_799, record.pauseCount)
+        assertEquals(1_799L * 2_000L, record.pauseMs)
+        assertNull(record.avgFps)
     }
 
     @Test

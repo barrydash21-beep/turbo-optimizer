@@ -102,7 +102,14 @@ class GameMonitorService : Service() {
             context.startForegroundService(intent)
         }
 
+        /**
+         * Stops the monitor for a session that has ended, and forgets what it was watching, as
+         * its own [finish] does: a stop from outside (the watcher's end, RESTORE) left them set.
+         */
         fun stop(context: Context) {
+            val store = Stores.tuner(context)
+            store.putString(KEY_PACKAGE, null)
+            store.putString(KEY_RATE, null)
             context.stopService(Intent(context, GameMonitorService::class.java))
         }
     }
@@ -218,6 +225,17 @@ class GameMonitorService : Service() {
 
             val result = shell.run("pidof $gamePackage")
             when {
+                result.ok && SessionEnd.live == null && !Diagnostics.inFront(shell.capture("dumpsys activity activities"), gamePackage) -> {
+                    // A process in the background is not a session: it starts once the game is in front.
+                    unavailablePolls = 0
+                    if (waitedMs >= LAUNCH_GRACE_MS) {
+                        val outcome = SessionEnd.finish(ctx, EndReason.NEVER_STARTED)
+                        if (outcome.ok) {
+                            finish()
+                            return
+                        }
+                    }
+                }
                 result.ok -> {
                     unavailablePolls = 0
                     val now = SystemClock.elapsedRealtime()
@@ -228,6 +246,7 @@ class GameMonitorService : Service() {
                             val resolution = Stores.gameResolution(applicationContext)
                             it.renderResolution = GameResolution.sessionValue(resolution, gamePackage)
                             it.fpsCap = GameResolution.sessionFpsCap(resolution, gamePackage)
+                            it.batteryTempStart = Diagnostics.parseBatteryTemp(shell.capture("dumpsys battery"))
                         }
                     if (now - lastSampleAt >= SAMPLE_MS) {
                         lastSampleAt = now

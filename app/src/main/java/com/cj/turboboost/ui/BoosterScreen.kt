@@ -1428,6 +1428,8 @@ private fun renderResolutionText(value: String?): String = when {
 
 private fun fpsText(fps: Float?): String = fps?.let { String.format(Locale.US, "%.1f", it) } ?: "unavailable"
 
+private fun tempText(celsius: Float): String = String.format(Locale.US, "%.1f °C", celsius)
+
 private fun profileText(profile: String?): String = when (profile) {
     null -> "not recorded"
     SessionRecord.BASELINE -> "baseline, nothing changed"
@@ -1519,6 +1521,18 @@ private fun SessionSummary(
                 )
                 SummaryRow("Average FPS", fpsText(record.avgFps))
                 SummaryRow("1% low FPS", fpsText(record.onePercentLowFps))
+                SummaryRow(
+                    "Pauses of 1 s or more",
+                    record.pauseCount?.let { n -> if (n == 0) "none" else "$n, ${durationText(record.pauseMs ?: 0L)} in all (not in FPS)" } ?: "not recorded"
+                )
+                SummaryRow(
+                    "Battery temperature",
+                    if (record.batteryTempStart == null && record.batteryTempEnd == null) {
+                        "unavailable"
+                    } else {
+                        "${record.batteryTempStart?.let { tempText(it) } ?: "?"} to ${record.batteryTempEnd?.let { tempText(it) } ?: "?"}"
+                    }
+                )
                 SummaryRow("Time to thermal status 1+", timeToThermal)
                 SummaryRow("Max thermal status", thermalText(record.maxThermal))
                 SummaryRow(
