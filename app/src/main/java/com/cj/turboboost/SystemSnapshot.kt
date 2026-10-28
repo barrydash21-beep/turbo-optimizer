@@ -68,6 +68,9 @@ object Stores {
     /** Session diagnostics: the last 20 sessions. */
     fun sessions(context: Context) = SharedPrefsStore(context, "booster_sessions")
 
+    /** The session in progress: its token, state and what its record needs ([SessionEnd]). */
+    fun session(context: Context) = SharedPrefsStore(context, "booster_session")
+
     /** Per-game downscale: each game's snapshot, the preset applied, and its measurements. */
     fun gameResolution(context: Context) = SharedPrefsStore(context, "booster_game_resolution")
 

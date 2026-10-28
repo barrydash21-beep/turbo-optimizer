@@ -30,6 +30,9 @@ object PerformanceTuner {
     private const val KEY_MIN_SAVED = "saved_min_refresh_rate"
     private const val KEY_PEAK_SAVED = "saved_peak_refresh_rate"
 
+    /** The rate the last apply pinned both keys to, so a revert can tell its own value from the system's. */
+    private const val KEY_PINNED = "pinned_refresh_rate"
+
     private val REFRESH_KEYS = listOf("min_refresh_rate", "peak_refresh_rate")
 
     /** Panels advertise 120.00001 or 89.96; a read-back within this is the rate that was asked for. */
@@ -75,6 +78,7 @@ object PerformanceTuner {
         val applied = mutableListOf<String>()
         val failed = mutableListOf<String>()
         val target = RefreshRate.format(refreshRate)
+        store.putString(KEY_PINNED, target)
 
         for (key in REFRESH_KEYS) {
             val name = "Refresh rate ($key)"
@@ -112,8 +116,10 @@ object PerformanceTuner {
      * Restores the exact saved values and clears `tweaks_active`. A saved value that was unset
      * ("null" or blank) is deleted rather than written.
      *
-     * The flag is cleared only when the refresh-rate restore landed, so a revert that could
-     * not run (Shizuku down) is retried on the next app start.
+     * The flag is cleared only when the refresh-rate restore landed and reads back, so a revert
+     * that could not run (Shizuku down) or did not stick is retried on the next app start. A
+     * saved value reads back as itself; a key that was unset only has to no longer hold the
+     * rate this app pinned, since HiOS refills an unset peak_refresh_rate with its own value.
      *
      * A no-op while `tweaks_active` is clear: nothing was captured, so the saved values read
      * as unset and the keys would be deleted. Restore normal settings did exactly that with no
@@ -138,10 +144,16 @@ object PerformanceTuner {
             } else {
                 "settings put system $key ${value!!.trim()}"
             }
-            if (shell.run(command).ok) {
+            if (!shell.run(command).ok) {
+                failed += "Refresh rate ($key)"
+                restored = false
+                continue
+            }
+            val back = normalize(shell.capture("settings get system $key"))
+            if (readsBack(back, normalize(value), normalize(store.getString(KEY_PINNED)))) {
                 applied += "Refresh rate ($key)"
             } else {
-                failed += "Refresh rate ($key)"
+                failed += "Refresh rate ($key) reads ${back ?: "null"}"
                 restored = false
             }
         }
@@ -154,6 +166,7 @@ object PerformanceTuner {
             store.putBoolean(KEY_ACTIVE, false)
             store.putString(KEY_MIN_SAVED, null)
             store.putString(KEY_PEAK_SAVED, null)
+            store.putString(KEY_PINNED, null)
         }
         return TuneReport(applied, failed, fixedModeOutput = fixed.output)
     }
@@ -176,6 +189,22 @@ object PerformanceTuner {
     /** Logging must never fail an apply or revert (android.util.Log is absent in JVM tests). */
     private inline fun log(block: () -> Unit) {
         runCatching { block() }
+    }
+
+    /**
+     * Whether a reverted key reads back as restored: [saved] itself, within [RATE_TOLERANCE_HZ]
+     * for numbers; for a key that was unset ([saved] null), anything but [pinned]. Without a
+     * pinned rate on record (a session from before it was kept), an unset key passes as it reads.
+     */
+    internal fun readsBack(back: String?, saved: String?, pinned: String?): Boolean {
+        if (saved != null) return back != null && sameRate(back, saved)
+        return back == null || pinned == null || !sameRate(back, pinned)
+    }
+
+    private fun sameRate(a: String, b: String): Boolean {
+        val x = a.toFloatOrNull()
+        val y = b.toFloatOrNull()
+        return if (x != null && y != null) kotlin.math.abs(x - y) <= RATE_TOLERANCE_HZ else a == b
     }
 
     /** `settings get` prints the literal "null" for an unset key. */

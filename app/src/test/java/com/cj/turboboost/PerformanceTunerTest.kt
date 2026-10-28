@@ -224,6 +224,35 @@ class PerformanceTunerTest {
     }
 
     @Test
+    fun `a revert that does not read back keeps the flag set and names the key`() {
+        val shell = SettingsShell(mapOf("min_refresh_rate" to "10.0", "peak_refresh_rate" to "120"))
+        RamCleaner.shell = shell
+        val store = FakeStore()
+        PerformanceTuner.applyGamingTweaks(store, GameRegistry.profileFor("com.example.game"), 60f)
+
+        // The writes exit 0 but do not stick.
+        RamCleaner.shell = SettingsShell(shell.system, ignoredKeys = setOf("peak_refresh_rate"))
+        val report = PerformanceTuner.revertGamingTweaks(store)
+
+        assertFalse(report.ok)
+        assertEquals(listOf("Refresh rate (peak_refresh_rate) reads 60.0"), report.failed)
+        assertTrue(PerformanceTuner.isActive(store))
+    }
+
+    @Test
+    fun `an unset key the system refills itself counts as restored, one still at the pinned rate does not`() {
+        assertTrue(PerformanceTuner.readsBack(null, null, "60.0"))
+        // HiOS fills an unset peak_refresh_rate with its own 90.
+        assertTrue(PerformanceTuner.readsBack("90.0", null, "60.0"))
+        assertFalse(PerformanceTuner.readsBack("60.0", null, "60.0"))
+        assertTrue(PerformanceTuner.readsBack("120.00001", "120", "60.0"))
+        assertFalse(PerformanceTuner.readsBack(null, "120", "60.0"))
+        assertFalse(PerformanceTuner.readsBack("90.0", "120", "60.0"))
+        // A session from before the pinned rate was kept.
+        assertTrue(PerformanceTuner.readsBack("60.0", null, null))
+    }
+
+    @Test
     fun `a revert that cannot run leaves the flag set for the next start`() {
         val store = FakeStore().apply { putBoolean("tweaks_active", true) }
         RamCleaner.shell = FakeShell(available = false)

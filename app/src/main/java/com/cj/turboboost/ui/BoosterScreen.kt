@@ -56,6 +56,7 @@ import com.cj.turboboost.BoostProfile
 import com.cj.turboboost.CheckStatus
 import com.cj.turboboost.DiagnosticsUi
 import com.cj.turboboost.DisplayState
+import com.cj.turboboost.EndReason
 import com.cj.turboboost.FpsCap
 import com.cj.turboboost.GameRegistry
 import com.cj.turboboost.GameResolutionUi
@@ -1419,6 +1420,17 @@ private fun renderResolutionText(value: String?): String = when {
 
 private fun fpsText(fps: Float?): String = fps?.let { String.format(Locale.US, "%.1f", it) } ?: "unavailable"
 
+private fun endReasonText(code: String?): String = when (EndReason.fromCode(code)) {
+    EndReason.EXITED -> "game closed"
+    EndReason.RESTARTED -> "game restarted, not compared"
+    EndReason.NEVER_STARTED -> "game never started"
+    EndReason.MANUAL -> "RESTORE"
+    EndReason.APP_START -> "at the next app start"
+    EndReason.REPLACED -> "by a new boost"
+    EndReason.SHIZUKU_LOST -> "Shizuku lost"
+    null -> "not recorded"
+}
+
 @Composable
 private fun SessionSummary(
     record: SessionRecord,
@@ -1469,6 +1481,7 @@ private fun SessionSummary(
                 AliveRow("Restricted apps alive at ${BackgroundRestrictor.ALIVE_CHECK_DELAY_MS / 1000} s", record.restrictedAliveEarly)
                 AliveRow("Restricted apps alive at end", record.restrictedAliveAtEnd)
                 SummaryRow("Duration", durationText(record.durationMs))
+                SummaryRow("Ended", endReasonText(record.endReason))
                 SummaryRow("Average FPS", fpsText(record.avgFps))
                 SummaryRow("1% low FPS", fpsText(record.onePercentLowFps))
                 SummaryRow("Time to thermal status 1+", timeToThermal)

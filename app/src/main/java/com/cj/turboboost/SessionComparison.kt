@@ -43,9 +43,12 @@ object SessionComparison {
 
     fun keyOf(record: SessionRecord) = SessionGroupKey(record.refreshRate, record.renderResolution, record.fpsCap)
 
-    /** [packageName]'s groups, the one played most recently first. */
+    /**
+     * [packageName]'s groups, the one played most recently first. A session whose game
+     * restarted mid-way is left out: it is not one continuous play under its settings.
+     */
     fun groups(records: List<SessionRecord>, packageName: String): List<GroupStats> =
-        records.filter { it.packageName == packageName }
+        records.filter { it.packageName == packageName && !it.gameRestarted }
             .groupBy(::keyOf)
             .map { (key, runs) -> stats(key, runs) }
             .sortedByDescending { it.newestStartedAtMs }

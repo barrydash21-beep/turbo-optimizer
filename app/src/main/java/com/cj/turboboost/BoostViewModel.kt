@@ -113,6 +113,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     private val snapshot: KeyValueStore = Stores.snapshot(app)
     private val tunerStore: KeyValueStore = Stores.tuner(app)
     private val restrictionStore: KeyValueStore = Stores.restrictions(app)
+    private val sessionStore: KeyValueStore = Stores.session(app)
     private val sessions = SessionStore(Stores.sessions(app))
     private val optionsStore: KeyValueStore = Stores.options(app)
     private val resolutionStore: KeyValueStore = Stores.gameResolution(app)
@@ -1031,22 +1032,22 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     fun restoreEverything() {
         stopVpn()
         val app = getApplication<Application>()
-        GameMonitorService.stop(app)
         viewModelScope.launch {
-            val report = withTimeoutOrNull(RESTORE_TIMEOUT_MS) {
-                withContext(Dispatchers.IO) {
-                    val system = RamCleaner.restoreSystemState(snapshot)
-                    // Refresh rate and fixed performance mode: the user's exact saved values.
-                    val tune = PerformanceTuner.revertGamingTweaks(tunerStore)
-                    // Each restricted package's own saved op mode and bucket.
-                    val restricted = BackgroundRestrictor.restore(RamCleaner.shell, restrictionStore)
-                    if (restricted.ok) {
-                        BucketRecheck.remember(RamCleaner.shell, restrictionStore, restricted, GameResolution.bootId(RamCleaner.shell))
+            val report = try {
+                withTimeoutOrNull(RESTORE_TIMEOUT_MS) {
+                    withContext(Dispatchers.IO) {
+                        val system = RamCleaner.restoreSystemState(snapshot)
+                        // The session's own end: its record, the refresh rate and fixed performance
+                        // mode, each restricted package's op mode and bucket, and its watcher.
+                        val end = SessionEnd.finish(SessionContext.of(app), EndReason.MANUAL)
+                        withContext(Dispatchers.Main) { noteRestored(end.restrictions) }
+                        val failed = end.tweaks.failed + end.restrictions.failedPackages.map { "Background app $it" }
+                        if (failed.isEmpty()) system else system.copy(failed = system.failed + failed)
                     }
-                    withContext(Dispatchers.Main) { noteRestored(restricted) }
-                    val failed = tune.failed + restricted.failedPackages.map { "Background app $it" }
-                    if (failed.isEmpty()) system else system.copy(failed = system.failed + failed)
                 }
+            } finally {
+                // After the end, so the monitor finds the session ended rather than ending it twice.
+                GameMonitorService.stop(app)
             }
             _events.send(
                 BoostEvent.ShowToast(report?.summary("System restored") ?: "Restore timed out - try again")
@@ -1098,39 +1099,46 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * On app start: if the tweaks or the background restriction are still marked active and
-     * no monitor is watching a live game, the app or game crashed or the phone rebooted
-     * mid-session, so put things back.
-     * The monitor runs in this process, so it is only ever "running" for a genuine session.
+     * On app start: finishes a session the app, the game or the phone went down in the middle
+     * of, through the same [SessionEnd.finish] every other path uses. That is one left
+     * "ending", or one still open with neither the monitor nor its watcher running; an open
+     * session whose watcher still runs is left to the watcher. With no session on record,
+     * tweaks or a restriction still held are put back as before.
      *
      * Shizuku can take a few seconds to bind after launch, so this waits for it.
      */
     fun revertStaleTweaks() {
         if (staleRevertStarted) return
         staleRevertStarted = true
+        val app = getApplication<Application>()
         viewModelScope.launch {
             repeat(STALE_REVERT_ATTEMPTS) {
                 val (tweaks, restrictions) = withContext(Dispatchers.IO) {
                     PerformanceTuner.isActive(tunerStore) to BackgroundRestrictor.isActive(restrictionStore)
                 }
-                if (!(tweaks || restrictions) || GameMonitorService.isRunning) return@launch
-                val result = withContext(Dispatchers.IO) {
-                    if (shizukuState == ShizukuState.READY || RamCleaner.shell.isAvailable()) {
-                        PerformanceTuner.revertGamingTweaks(tunerStore) to
-                            BackgroundRestrictor.restore(RamCleaner.shell, restrictionStore)
-                    } else {
-                        null
+                val open = SessionEnd.state(sessionStore).let { it == SessionEnd.STATE_ACTIVE || it == SessionEnd.STATE_ENDING }
+                if (!(tweaks || restrictions || open) || GameMonitorService.isRunning) return@launch
+                // Asked with Shizuku up, so a watcher that cannot be checked is never taken for gone.
+                var nothingToDo = false
+                val outcome = withContext(Dispatchers.IO) {
+                    val shell = RamCleaner.shell
+                    when {
+                        !shell.isAvailable() -> null
+                        !SessionEnd.needsFinishAtStart(sessionStore, tweaks, restrictions, GameMonitorService.isRunning) {
+                            SessionWatcher.isAlive(shell).ok
+                        } -> null.also { nothingToDo = true }
+                        else -> SessionEnd.finish(SessionContext.of(app), EndReason.APP_START)
                     }
                 }
-                result?.second?.let { noteRestored(it) }
-                if (result?.second?.ok == true) {
-                    withContext(Dispatchers.IO) {
-                        BucketRecheck.remember(RamCleaner.shell, restrictionStore, result.second, GameResolution.bootId(RamCleaner.shell))
-                    }
+                if (nothingToDo) return@launch
+                if (outcome == null) {
+                    delay(2000)
+                    return@repeat
                 }
-                if (result != null && result.first.ok && result.second.ok) {
+                noteRestored(outcome.restrictions)
+                if (outcome.ok) {
                     val what = listOfNotNull("display settings".takeIf { tweaks }, "background apps".takeIf { restrictions })
-                    _events.send(BoostEvent.ShowToast("Restored your original ${what.joinToString(" and ")}"))
+                    if (what.isNotEmpty()) _events.send(BoostEvent.ShowToast("Restored your original ${what.joinToString(" and ")}"))
                     return@launch
                 }
                 delay(2000)

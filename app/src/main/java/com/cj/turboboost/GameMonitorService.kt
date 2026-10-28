@@ -25,20 +25,22 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * Watches for the selected game to exit, then puts the gaming tweaks and the background
- * restriction back and stops itself. While the game runs it also samples thermal status and
- * FPS for the session summary, and records which restricted apps are alive
- * [BackgroundRestrictor.ALIVE_CHECK_DELAY_MS] after it starts and when the game exits.
+ * Holds the session's foreground notification and starts its [SessionWatcher], which sees the
+ * game exit, samples it, and ends the session through [SessionProvider] even while HiOS has
+ * this app frozen. The session always ends through [SessionEnd.finish], whichever path gets
+ * there first; this service stops once it is ended. It also records which restricted apps are
+ * alive [BackgroundRestrictor.ALIVE_CHECK_DELAY_MS] after it starts.
  *
- * Polls `pidof <package>` through Shizuku every [POLL_MS]. A game needs a few seconds to
- * appear after launch, so nothing is reverted until it has been seen running once (or
- * [LAUNCH_GRACE_MS] has passed without it ever appearing).
+ * While the watcher runs this service only checks every [POLL_MS] that it still does. When the
+ * watcher could not start, or is gone, it does what it always did: polls `pidof <package>`
+ * through Shizuku every [POLL_MS] and samples thermal status and FPS every [SAMPLE_MS]. A game
+ * needs a few seconds to appear after launch, so nothing is reverted until it has been seen
+ * running once (or [LAUNCH_GRACE_MS] has passed without it ever appearing).
  *
  * Sticky: the package and rate are persisted at start, so if the system kills and restarts
- * the process mid-game the monitor picks the session back up. Samples taken before such a
- * restart are lost; the summary covers what was measured after it. If the service does not
- * come back, the next app start reverts the tweaks from the persisted `tweaks_active` flag, and the
- * restriction from its own persisted state.
+ * the process mid-game the monitor picks the session back up. The watcher's samples survive
+ * that; in-process samples taken before it are lost. If the service does not come back, the
+ * watcher still ends the session, and the next app start finishes one left unfinished.
  */
 class GameMonitorService : Service() {
 
@@ -97,14 +99,6 @@ class GameMonitorService : Service() {
     private var job: Job? = null
     private var aliveJob: Job? = null
 
-    /** The early live-process check, kept until the session is saved. */
-    @Volatile
-    private var aliveEarly: List<String>? = null
-
-    /** The session being measured, held in memory only until the game exits. */
-    @Volatile
-    private var session: SessionAccumulator? = null
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -121,7 +115,9 @@ class GameMonitorService : Service() {
         // Before any early exit: a startForegroundService() caller must see startForeground().
         goForeground(gamePackage)
         val restrictions = Stores.restrictions(applicationContext)
-        val active = PerformanceTuner.isActive(store) || BackgroundRestrictor.isActive(restrictions)
+        val sessionState = SessionEnd.state(Stores.session(applicationContext))
+        val open = sessionState == SessionEnd.STATE_ACTIVE || sessionState == SessionEnd.STATE_ENDING
+        val active = PerformanceTuner.isActive(store) || BackgroundRestrictor.isActive(restrictions) || open
         if (gamePackage == null || rate == null || !active) {
             finish()
             return START_NOT_STICKY
@@ -130,11 +126,13 @@ class GameMonitorService : Service() {
         _running.value = true
         job?.cancel()
         aliveJob?.cancel()
-        // A new boost replaces a session still running: keep what that one measured.
-        saveSession()
-        aliveEarly = null
-        job = scope.launch { watch(gamePackage, rate) }
-        if (BackgroundRestrictor.isActive(restrictions)) {
+        // A sticky restart picks the session on disk back up; a new boost starts one.
+        val fresh = intent?.getStringExtra(EXTRA_PACKAGE) != null
+        job = scope.launch {
+            if (fresh) beginSession(gamePackage, rate)
+            watch(gamePackage, rate)
+        }
+        if (fresh && BackgroundRestrictor.isActive(restrictions)) {
             aliveJob = scope.launch {
                 val due = SystemClock.elapsedRealtime() + BackgroundRestrictor.ALIVE_CHECK_DELAY_MS
                 delay(BackgroundRestrictor.ALIVE_CHECK_DELAY_MS)
@@ -144,32 +142,70 @@ class GameMonitorService : Service() {
                     Log.w(TAG, "Restricted apps check ran ${lateMs / 1000} s late (process frozen?) - not recorded")
                     return@launch
                 }
-                aliveEarly = BackgroundRestrictor.alive(RamCleaner.shell, restrictions)
-                Log.i(TAG, "Restricted apps alive after ${BackgroundRestrictor.ALIVE_CHECK_DELAY_MS / 1000} s: ${aliveEarly ?: "unreadable"}")
+                val alive = BackgroundRestrictor.alive(RamCleaner.shell, restrictions)
+                SessionEnd.noteAliveEarly(Stores.session(applicationContext), alive)
+                Log.i(TAG, "Restricted apps alive after ${BackgroundRestrictor.ALIVE_CHECK_DELAY_MS / 1000} s: ${alive ?: "unreadable"}")
             }
         }
         return START_STICKY
     }
 
+    /**
+     * Opens the session on disk under a fresh token and starts its watcher. A session still
+     * open is closed first ([SessionEnd.begin]), keeping what it measured.
+     */
+    private fun beginSession(gamePackage: String, rate: Float) {
+        val ctx = SessionContext.of(applicationContext)
+        // Read once: a preset change reaches the game only at its next launch.
+        val resolution = Stores.gameResolution(applicationContext)
+        val token = SessionEnd.newToken()
+        SessionEnd.begin(
+            ctx, gamePackage, rate,
+            GameResolution.sessionValue(resolution, gamePackage), GameResolution.sessionFpsCap(resolution, gamePackage),
+            token
+        )
+        val started = ctx.shell.isAvailable() && runCatching {
+            SessionWatcher.start(ctx.shell, gamePackage, token, SessionProvider.authority(packageName))
+        }.getOrDefault(false)
+        SessionEnd.noteWatcher(ctx.session, started)
+        Log.i(TAG, if (started) "Session watcher started for $gamePackage" else "Session watcher did not start - monitoring in-process")
+    }
+
     private suspend fun watch(gamePackage: String, rate: Float) {
-        val store = Stores.tuner(applicationContext)
-        val restrictions = Stores.restrictions(applicationContext)
-        val sampler = SessionSampler(RamCleaner.shell, gamePackage)
+        val ctx = SessionContext.of(applicationContext)
+        val shell = ctx.shell
+        val sampler = SessionSampler(shell, gamePackage)
+        var watcherRunning = SessionEnd.watcherHeld(ctx.session)
         var waitedMs = 0L
         var unavailablePolls = 0
         var lastSampleAt = 0L
 
         while (true) {
-            val result = RamCleaner.shell.run("pidof $gamePackage")
+            if (SessionEnd.isEnded(ctx.session)) {
+                Log.d(TAG, "Session ended - monitor stopping")
+                finish()
+                return
+            }
+            if (watcherRunning) {
+                val alive = SessionWatcher.isAlive(shell)
+                // Shizuku away is not the watcher gone: it runs without Shizuku's server.
+                if (alive.ok || alive.unavailable || alive.timedOut || alive.apiUnsupported) {
+                    delay(POLL_MS)
+                    continue
+                }
+                Log.w(TAG, "Session watcher gone - monitoring in-process")
+                watcherRunning = false
+            }
+
+            val result = shell.run("pidof $gamePackage")
             when {
                 result.ok -> {
                     unavailablePolls = 0
                     val now = SystemClock.elapsedRealtime()
-                    val current = session ?: SessionAccumulator(gamePackage, rate, System.currentTimeMillis(), now)
+                    val current = SessionEnd.live ?: SessionAccumulator(gamePackage, rate, System.currentTimeMillis(), now)
                         .also {
-                            session = it
+                            SessionEnd.live = it
                             lastSampleAt = now
-                            // Read once: a preset change reaches the game only at its next launch.
                             val resolution = Stores.gameResolution(applicationContext)
                             it.renderResolution = GameResolution.sessionValue(resolution, gamePackage)
                             it.fpsCap = GameResolution.sessionFpsCap(resolution, gamePackage)
@@ -189,28 +225,23 @@ class GameMonitorService : Service() {
                 // pidof exits 1 when there is no such process; anything else is a failed check.
                 result.exitCode == 1 && !result.timedOut && !result.unavailable && !result.apiUnsupported -> {
                     unavailablePolls = 0
-                    if (session != null || waitedMs >= LAUNCH_GRACE_MS) {
-                        Log.d(TAG, "$gamePackage is gone - reverting gaming tweaks")
-                        // Before the restore: afterwards the packages are free to run again.
-                        session?.restrictedAliveAtEnd = BackgroundRestrictor.alive(RamCleaner.shell, restrictions)
-                        saveSession()
-                        val report = PerformanceTuner.revertGamingTweaks(store)
-                        val restored = BackgroundRestrictor.restore(RamCleaner.shell, restrictions)
-                        Log.i(TAG, "Background apps restored: " + restored.packages.joinToString("; ") { "${it.packageName} ${it.detail()}" })
-                        // A reboot soon after can bring the restricted bucket back: checked at the next app start.
-                        if (restored.ok) BucketRecheck.remember(RamCleaner.shell, restrictions, restored, GameResolution.bootId(RamCleaner.shell))
-                        if (report.failed.isEmpty() && !report.unavailable && restored.ok) {
+                    val seen = SessionEnd.live != null
+                    if (seen || waitedMs >= LAUNCH_GRACE_MS) {
+                        Log.d(TAG, "$gamePackage is gone - ending the session")
+                        val outcome = SessionEnd.finish(ctx, if (seen) EndReason.EXITED else EndReason.NEVER_STARTED)
+                        if (outcome.ok) {
                             finish()
                             return
                         }
-                        // Keep tweaks_active set and keep trying; this poll's failure is not final.
+                        // The session stays "ending" and this keeps trying; this poll's failure is not final.
                     }
                 }
                 else -> {
                     unavailablePolls++
                     if (unavailablePolls >= MAX_UNAVAILABLE_POLLS) {
-                        Log.w(TAG, "Shizuku unavailable - leaving revert to the next app start")
-                        saveSession()
+                        Log.w(TAG, "Shizuku unavailable - leaving the restore to the next app start")
+                        // Saves the record and leaves the session "ending" for the next app start.
+                        SessionEnd.finish(ctx, EndReason.SHIZUKU_LOST)
                         finish()
                         return
                     }
@@ -221,19 +252,9 @@ class GameMonitorService : Service() {
         }
     }
 
-    /** Writes the in-memory session once, if the game was ever seen running. */
-    @Synchronized
-    private fun saveSession() {
-        val done = session ?: return
-        session = null
-        if (done.restrictedAliveEarly == null) done.restrictedAliveEarly = aliveEarly
-        val record = done.finish(SystemClock.elapsedRealtime())
-        Log.i(TAG, "Session saved: ${record.encode()}")
-        SessionStore(Stores.sessions(applicationContext)).save(record)
-    }
-
     private fun finish() {
         _running.value = false
+        aliveJob?.cancel()
         val store = Stores.tuner(applicationContext)
         store.putString(KEY_PACKAGE, null)
         store.putString(KEY_RATE, null)
@@ -244,8 +265,8 @@ class GameMonitorService : Service() {
     override fun onDestroy() {
         _running.value = false
         scope.cancel()
-        // Stopped mid-session (manual Restore): the session still ended, so keep it.
-        saveSession()
+        // Nothing to save here: every path that stops a session ends it through SessionEnd first,
+        // and one stopped any other way is still on disk for the watcher or the next app start.
         super.onDestroy()
     }
 

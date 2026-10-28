@@ -245,9 +245,19 @@ class SessionStoreTest {
     @Test
     fun `the fps cap round trips as field 16, and none stays null`() {
         val capped = record(11L).copy(renderResolution = "LOWER 0.55", fpsCap = 40)
-        assertEquals(16, capped.encode().split('|').size)
+        assertEquals(40, capped.encode().split('|')[15].toInt())
         assertEquals(capped, SessionRecord.decode(capped.encode()))
         assertNull(SessionRecord.decode(record(12L).encode())!!.fpsCap)
+    }
+
+    @Test
+    fun `the end reason round trips as field 17, and a restarted game is flagged`() {
+        val restarted = record(13L).copy(endReason = EndReason.RESTARTED.code)
+        assertEquals(17, restarted.encode().split('|').size)
+        assertEquals(restarted, SessionRecord.decode(restarted.encode()))
+        assertTrue(restarted.gameRestarted)
+        assertFalse(record(14L).copy(endReason = EndReason.EXITED.code).gameRestarted)
+        assertNull(SessionRecord.decode(record(15L).encode())!!.endReason)
     }
 
     @Test
@@ -266,6 +276,7 @@ class SessionStoreTest {
             assertNotNull("$size fields", decoded)
             assertEquals("$size fields", 43.28f, decoded!!.avgFps!!, 0.001f)
             assertEquals("$size fields", if (size == 16) 30 else null, decoded.fpsCap)
+            assertNull("$size fields", decoded.endReason)
         }
         assertEquals(listOf("com.example.chat"), SessionRecord.decode(lengths.getValue(15))!!.restrictedAliveAtEnd)
         assertNull(SessionRecord.decode("$base|90.0|default|-"))

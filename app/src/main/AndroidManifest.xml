@@ -122,5 +122,15 @@
                 android:value="Polls whether the user-launched game is still running so display tweaks can be reverted when it exits, and samples its frame rate and thermal status for the session summary" />
         </service>
 
+        <!--
+            Where the Shizuku-side session watcher ends a session: a synchronous call thaws this
+            app out of the HiOS freezer. call() admits only the shell uid or root holding the
+            session's token (SessionEnd.authorize).
+        -->
+        <provider
+            android:name=".SessionProvider"
+            android:authorities="${applicationId}.session"
+            android:exported="true" />
+
     </application>
 </manifest>

@@ -48,8 +48,16 @@ data class SessionRecord(
      * The frame-rate cap held when the game was first seen ([GameResolution.sessionFpsCap]),
      * or null for none, including every record from before the cap existed.
      */
-    val fpsCap: Int? = null
+    val fpsCap: Int? = null,
+    /**
+     * How the session ended ([EndReason.code]), or null for records from before this existed.
+     * [EndReason.RESTARTED]: the game's process changed mid-session, so the run is not one
+     * continuous play of the game and [SessionComparison] leaves it out.
+     */
+    val endReason: String? = null
 ) {
+    val gameRestarted: Boolean get() = endReason == EndReason.RESTARTED.code
+
     /** Average FPS is more than 15% below the chosen rate, or the device reached "moderate". */
     val struggled: Boolean
         get() = (avgFps != null && avgFps < refreshRate * 0.85f) || (maxThermal != null && maxThermal >= 2)
@@ -58,12 +66,15 @@ data class SessionRecord(
         packageName, RefreshRate.format(refreshRate), startedAtMs, durationMs,
         avgFps?.let { fmt(it) }, onePercentLowFps?.let { fmt(it) }, msToThermal1, maxThermal,
         samples, fpsSamples, thermalSamples, observedPeak?.let { RefreshRate.format(it) }, renderResolution,
-        encodeList(restrictedAliveEarly), encodeList(restrictedAliveAtEnd), fpsCap
+        encodeList(restrictedAliveEarly), encodeList(restrictedAliveAtEnd), fpsCap, endReason
     ).joinToString(SEP) { it?.toString() ?: "" }
 
     companion object {
         private const val SEP = "|"
-        private const val FIELDS = 16
+        private const val FIELDS = 17
+
+        /** Records saved before [endReason] existed. */
+        private const val FIELDS_V5 = 16
 
         /** Records saved before [observedPeak] existed. */
         private const val FIELDS_V1 = 11
@@ -93,7 +104,7 @@ data class SessionRecord(
         /** Null for a line that is not a complete record. */
         fun decode(line: String): SessionRecord? {
             val f = line.split(SEP)
-            if (f.size !in setOf(FIELDS, FIELDS_V4, FIELDS_V3, FIELDS_V2, FIELDS_V1) || f[0].isBlank()) return null
+            if (f.size !in setOf(FIELDS, FIELDS_V5, FIELDS_V4, FIELDS_V3, FIELDS_V2, FIELDS_V1) || f[0].isBlank()) return null
             return runCatching {
                 SessionRecord(
                     packageName = f[0],
@@ -111,7 +122,8 @@ data class SessionRecord(
                     renderResolution = f.getOrNull(12)?.takeIf { it.isNotBlank() },
                     restrictedAliveEarly = decodeList(f.getOrNull(13)),
                     restrictedAliveAtEnd = decodeList(f.getOrNull(14)),
-                    fpsCap = f.getOrNull(15)?.toIntOrNull()
+                    fpsCap = f.getOrNull(15)?.toIntOrNull(),
+                    endReason = f.getOrNull(16)?.takeIf { it.isNotBlank() }
                 )
             }.getOrNull()
         }
@@ -382,10 +394,14 @@ class SessionStore(private val store: KeyValueStore) {
     fun all(): List<SessionRecord> =
         store.getString(KEY_SESSIONS)?.lineSequence()?.mapNotNull { SessionRecord.decode(it) }?.toList().orEmpty()
 
-    /** Appends [record] and keeps the newest [MAX_SESSIONS]. One write. */
+    /**
+     * Appends [record] and keeps the newest [MAX_SESSIONS]. One write, on disk before it
+     * returns: a session can end inside a short wake from the HiOS freezer, and the session-end
+     * mark written next must never claim a record that was not kept.
+     */
     fun save(record: SessionRecord) {
         val kept = (all() + record).takeLast(MAX_SESSIONS)
-        store.putString(KEY_SESSIONS, kept.joinToString("\n") { it.encode() })
+        store.putStringNow(KEY_SESSIONS, kept.joinToString("\n") { it.encode() })
         _saved.value = _saved.value + 1
     }
 

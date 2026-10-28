@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- A session is now watched by a small helper that runs through Shizuku. On phones that freeze apps in the background (seen on HiOS 16, which froze the app 5 s after the game opened even with its notification showing), the app measured nothing and only put your settings back when you next opened it. The helper keeps measuring while the app is frozen, sees the game close, and wakes the app to end the session and put your settings back.
+- Frame timing is read every 2 s while the helper runs, instead of every 30 s. When the helper can't start, the app monitors the session itself as before.
+- A session ends in two steps: it is marked as ending before anything is put back, and as ended only once every setting reads back. One left unfinished (the app was closed, or a setting didn't stick) is finished the next time any path ends it, including the next app start, without saving its record twice.
+- Putting the refresh rate back is now checked by reading it back.
+- A session in which the game's process restarted is marked "game restarted" in its summary and left out of the Session comparison.
+
 ## [1.2.4] - 2026-10-23
 
 ### Added
