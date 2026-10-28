@@ -43,7 +43,7 @@ Turbo Optimizer implements Android's native `VpnService` API strictly as an **on
 - **Background Noise Suppression**: Background applications routed through the local virtual interface have non-critical sync packets filtered at the local TUN layer during active sessions, preventing bufferbloat and latency spikes.
 
 ### 3. State Preservation & Hardware Safety
-- **State Snapshot & Auto-Restore**: Before applying any system modification, Turbo Optimizer captures a comprehensive snapshot of the device's active configuration. When the selected foreground session ends, an automated background monitor cleanly restores all original user preferences.
+- **State Snapshot & Auto-Restore**: Before applying any system modification, Turbo Optimizer captures a comprehensive snapshot of the device's active configuration. When the game closes, Turbo restores your settings. On phones that freeze background apps, a helper running through Shizuku wakes Turbo to do it.
 - **Strict Hardware Safety**: Device thermal safety limits are strictly respected. Turbo Optimizer **never** modifies thermal throttling thresholds or kernel governors, ensuring the device remains within safe operating temperatures.
 
 ---
