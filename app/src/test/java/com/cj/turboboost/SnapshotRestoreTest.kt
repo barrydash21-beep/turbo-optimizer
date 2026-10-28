@@ -94,7 +94,7 @@ class SnapshotRestoreTest {
         RamCleaner.shell = shell
         RamCleaner.syncSettings = FakeSyncSettings()
 
-        RamCleaner.applyProfile(BoostProfile.PERFORMANCE, "com.example.game", store)
+        RamCleaner.applyProfile(BoostProfile.PERFORMANCE, "com.example.game", store, FakeStore())
 
         val firstWrite = shell.commands.indexOfFirst { it.startsWith("settings put") }
         val lastRead = shell.commands.indexOfLast { it.startsWith("settings get") }

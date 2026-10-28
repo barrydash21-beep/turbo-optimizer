@@ -24,11 +24,12 @@ class BoostProfileCommandsTest {
         profile: BoostProfile,
         gamePackage: String = game,
         sync: FakeSyncSettings = FakeSyncSettings()
-    ): Pair<FakeShell, StepReport> {
-        val shell = FakeShell()
+    ): Pair<GameModeShell, StepReport> {
+        // The game starts in custom mode, so every profile's mode is a real switch.
+        val shell = GameModeShell(mode = "custom")
         RamCleaner.shell = shell
         RamCleaner.syncSettings = sync
-        val report = RamCleaner.applyProfile(profile, gamePackage, FakeStore())
+        val report = RamCleaner.applyProfile(profile, gamePackage, FakeStore(), FakeStore())
         return shell to report
     }
 
@@ -97,11 +98,11 @@ class BoostProfileCommandsTest {
 
     @Test
     fun `a game with a render resolution preset keeps its custom mode through a boost`() {
-        val shell = FakeShell()
+        val shell = GameModeShell(mode = "custom")
         RamCleaner.shell = shell
         RamCleaner.syncSettings = FakeSyncSettings()
 
-        val report = RamCleaner.applyProfile(BoostProfile.PERFORMANCE, game, FakeStore(), keepGameMode = true)
+        val report = RamCleaner.applyProfile(BoostProfile.PERFORMANCE, game, FakeStore(), FakeStore(), keepGameMode = true)
 
         assertFalse(shell.ran("cmd game mode"))
         assertFalse(report.failed.contains("Game mode"))
@@ -162,13 +163,13 @@ class BoostProfileCommandsTest {
 
     @Test
     fun `a failing step is named in the report and the summary`() {
-        RamCleaner.shell = FakeShell(failingPrefixes = setOf("cmd game mode"))
+        RamCleaner.shell = GameModeShell(mode = "custom", ignoresSwitch = true)
         RamCleaner.syncSettings = FakeSyncSettings()
 
-        val report = RamCleaner.applyProfile(BoostProfile.BALANCED, game, FakeStore())
+        val report = RamCleaner.applyProfile(BoostProfile.BALANCED, game, FakeStore(), FakeStore())
 
         assertFalse(report.allOk)
-        assertTrue(report.failed.contains("Game mode"))
+        assertTrue(report.failed.contains("Game mode (wanted standard, reads custom)"))
         assertTrue(report.summary("Boosted").contains("Game mode"))
     }
 
@@ -178,7 +179,7 @@ class BoostProfileCommandsTest {
         RamCleaner.shell = shell
         RamCleaner.syncSettings = FakeSyncSettings()
 
-        val report = RamCleaner.applyProfile(BoostProfile.PERFORMANCE, game, FakeStore())
+        val report = RamCleaner.applyProfile(BoostProfile.PERFORMANCE, game, FakeStore(), FakeStore())
 
         assertTrue(report.unavailable)
         assertFalse(report.allOk)
@@ -191,7 +192,7 @@ class BoostProfileCommandsTest {
         RamCleaner.shell = FakeShell(apiUnsupported = true)
         RamCleaner.syncSettings = FakeSyncSettings()
 
-        val report = RamCleaner.applyProfile(BoostProfile.BALANCED, game, FakeStore())
+        val report = RamCleaner.applyProfile(BoostProfile.BALANCED, game, FakeStore(), FakeStore())
 
         assertTrue(report.apiUnsupported)
         assertEquals("Shizuku API not supported", report.summary("Boosted"))

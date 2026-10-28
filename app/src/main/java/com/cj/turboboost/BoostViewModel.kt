@@ -603,7 +603,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     private fun prepareBaseline(pkg: String, chosenRate: Float): BaselineStart {
         val open = SessionEnd.state(sessionStore).let { it == SessionEnd.STATE_ACTIVE || it == SessionEnd.STATE_ENDING }
         val held = Baseline.Held(
-            tweaks = PerformanceTuner.isActive(tunerStore),
+            tweaks = PerformanceTuner.isActive(tunerStore) || ProfileGameMode.held(resolutionStore),
             restriction = BackgroundRestrictor.isActive(restrictionStore),
             systemSnapshot = SystemSnapshot.exists(snapshot),
             gamePreset = GameResolution.holds(resolutionStore, pkg),
@@ -714,7 +714,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                             // + the profile's extras; the kill runs first inside it. A render
                             // resolution preset lives in the game's custom mode: keep that mode.
                             val keepMode = GameResolution.holds(resolutionStore, gamePackage)
-                            val report = RamCleaner.applyProfile(active, gamePackage, snapshot, keepGameMode = keepMode)
+                            val report = RamCleaner.applyProfile(active, gamePackage, snapshot, resolutionStore, keepGameMode = keepMode)
                             // (b) The per-game rate and power mode. Saves the originals itself.
                             Triple(report, PerformanceTuner.applyGamingTweaks(tunerStore, game, rate), restricted)
                         }
@@ -740,7 +740,9 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     }
 
                     // (c) Whatever happened above, if tweaks are on something must undo them.
-                    if (PerformanceTuner.isActive(tunerStore) || BackgroundRestrictor.isActive(restrictionStore)) {
+                    if (PerformanceTuner.isActive(tunerStore) || BackgroundRestrictor.isActive(restrictionStore) ||
+                        ProfileGameMode.held(resolutionStore)
+                    ) {
                         try {
                             GameMonitorService.start(app, gamePackage, rate, active.name, startCheck)
                         } catch (e: Exception) {
@@ -1124,7 +1126,8 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                         // mode, each restricted package's op mode and bucket, and its watcher.
                         val end = SessionEnd.finish(SessionContext.of(app), EndReason.MANUAL)
                         withContext(Dispatchers.Main) { noteRestored(end.restrictions) }
-                        val failed = end.tweaks.failed + end.restrictions.failedPackages.map { "Background app $it" }
+                        val failed = end.tweaks.failed + end.restrictions.failedPackages.map { "Background app $it" } +
+                            listOfNotNull("Game mode (${end.gameMode.detail})".takeIf { !end.gameMode.ok })
                         if (failed.isEmpty()) system else system.copy(failed = system.failed + failed)
                     }
                 }
@@ -1197,7 +1200,9 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             repeat(STALE_REVERT_ATTEMPTS) {
                 val (tweaks, restrictions) = withContext(Dispatchers.IO) {
-                    PerformanceTuner.isActive(tunerStore) to BackgroundRestrictor.isActive(restrictionStore)
+                    // A game mode a profile switched counts as held tweaks: the end puts it back too.
+                    (PerformanceTuner.isActive(tunerStore) || ProfileGameMode.held(resolutionStore)) to
+                        BackgroundRestrictor.isActive(restrictionStore)
                 }
                 val open = SessionEnd.state(sessionStore).let { it == SessionEnd.STATE_ACTIVE || it == SessionEnd.STATE_ENDING }
                 if (!(tweaks || restrictions || open) || GameMonitorService.isRunning) return@launch

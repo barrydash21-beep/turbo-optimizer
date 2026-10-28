@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Diagnostics and the lower-rate suggestion ignore baselines.
+- The profile's game mode (battery, standard or performance) is now saved before a boost switches it and put back when the session ends, on RESTORE, or at the next app start. Before, it was never put back: a BALANCED boost took a game out of a custom mode another app had set, and left it there. It is put back only while the game still holds the mode the boost set; one changed since, by another app or a phone restart, is left as it is. A mode the game doesn't offer is no longer sent.
 - A session is now watched by a small helper that runs through Shizuku. On phones that freeze apps in the background (seen on HiOS 16, which froze the app 5 s after the game opened even with its notification showing), the app measured nothing and only put your settings back when you next opened it. The helper keeps measuring while the app is frozen, sees the game close, and wakes the app to end the session and put your settings back.
 - Frame timing is read every 2 s while the helper runs, instead of every 30 s. When the helper can't start, the app monitors the session itself as before.
 - A session ends in two steps: it is marked as ending before anything is put back, and as ended only once every setting reads back. One left unfinished (the app was closed, or a setting didn't stick) is finished the next time any path ends it, including the next app start, without saving its record twice.

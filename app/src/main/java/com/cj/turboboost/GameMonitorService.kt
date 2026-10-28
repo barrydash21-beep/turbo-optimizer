@@ -134,7 +134,8 @@ class GameMonitorService : Service() {
         val kind = intent?.getStringExtra(EXTRA_KIND)
         // A baseline changes nothing, so nothing is held, and it is still a session to measure.
         val baseline = fresh && kind == SessionRecord.BASELINE
-        val active = PerformanceTuner.isActive(store) || BackgroundRestrictor.isActive(restrictions) || open || baseline
+        val active = PerformanceTuner.isActive(store) || BackgroundRestrictor.isActive(restrictions) ||
+            ProfileGameMode.held(Stores.gameResolution(applicationContext)) || open || baseline
         if (gamePackage == null || rate == null || !active) {
             finish()
             return START_NOT_STICKY

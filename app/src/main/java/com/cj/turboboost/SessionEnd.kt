@@ -67,7 +67,9 @@ data class SessionEndOutcome(
     /** The record saved by this try; null when there was none or an earlier try saved it. */
     val record: SessionRecord?,
     val tweaks: TuneReport,
-    val restrictions: RestrictionReport
+    val restrictions: RestrictionReport,
+    /** The game mode a profile switched, put back ([ProfileGameMode.restore]). */
+    val gameMode: GameModeOutcome = GameModeOutcome(true, "nothing held")
 )
 
 /**
@@ -235,9 +237,10 @@ object SessionEnd {
     }
 
     /**
-     * Ends the session: marks it ending, saves its record once, puts back the tweaks and the
-     * background restriction, and marks it ended only when every one of them read back. With no
-     * session open it still puts back whatever is held, as the monitor always did.
+     * Ends the session: marks it ending, saves its record once, puts back the tweaks, the
+     * background restriction and the game mode a profile switched, and marks it ended only when
+     * every one of them read back. With no session open it still puts back whatever is held, as
+     * the monitor always did.
      */
     @Synchronized
     fun finish(ctx: SessionContext, reason: EndReason): SessionEndOutcome {
@@ -257,20 +260,23 @@ object SessionEnd {
         if (restricted.ok && restricted.packages.isNotEmpty()) {
             BucketRecheck.remember(ctx.shell, ctx.restrictions, restricted, GameResolution.bootId(ctx.shell))
         }
+        // Before the reference is read: the mode it holds afterwards is the game's own again.
+        val gameMode = ProfileGameMode.restore(ctx.shell, ctx.gameResolution)
+        log { Log.i(TAG, "Session end (${reason.code}): game mode ${gameMode.detail}") }
 
         // What the game holds once this session's own changes are undone is the next session's reference.
         if (open && pkg != null && ctx.shell.isAvailable()) {
             GameStateRef.save(ctx.gameResolution, pkg, GameStateRef.read(ctx.shell, pkg), GameResolution.bootId(ctx.shell))
         }
 
-        val restored = tweaks.ok && restricted.ok
+        val restored = tweaks.ok && restricted.ok && gameMode.ok
         if (restored && open && store.getBoolean(KEY_RECORD_SAVED, false)) {
             SessionWatcher.stop(ctx.shell)
             SessionWatcher.clearData(ctx.shell)
             SESSION_KEYS.forEach { store.putStringNow(it, null) }
             store.putStringNow(KEY_STATE, STATE_ENDED)
         }
-        return SessionEndOutcome(restored && (!open || state(store) == STATE_ENDED), record, tweaks, restricted)
+        return SessionEndOutcome(restored && (!open || state(store) == STATE_ENDED), record, tweaks, restricted, gameMode)
     }
 
     /** [saveRecordOnce], returning the record saved now. */

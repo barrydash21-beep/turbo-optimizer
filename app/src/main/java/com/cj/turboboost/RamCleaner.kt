@@ -247,18 +247,6 @@ object RamCleaner {
     }
 
     /**
-     * Opts [gamePackage] into one of Android's native GameManager scheduling profiles.
-     *
-     * @param mode one of battery | standard | performance.
-     *
-     * `cmd game mode` is API 31+; older shells return "Unknown service".
-     */
-    fun applyGameMode(mode: String, gamePackage: String): Boolean {
-        if (!shell.isAvailable()) return false
-        return runShizukuCommand("cmd game mode $mode $gamePackage").ok
-    }
-
-    /**
      * Silences heads-up notifications (which composite over the game surface on the UI
      * thread) and suspends master auto-sync.
      *
@@ -311,7 +299,7 @@ object RamCleaner {
      *
      * NOTE: Settings.System.pointer_speed governs the *mouse/trackpad* cursor, not the
      * touchscreen -- per AOSP InputSettings it has no effect on touch latency or sampling.
-     * Kept because it is explicitly specified and harmless; see [applyGameMode]
+     * Kept because it is explicitly specified and harmless; see [ProfileGameMode]
      * for the scheduling lever that does affect gameplay responsiveness.
      */
     fun optimizeTouchInput(): Boolean {
@@ -387,11 +375,16 @@ object RamCleaner {
      * [keepGameMode]: the game has a render resolution preset, which lives in GameManager's
      * custom mode. Switching to the profile's mode would drop the downscale, so the mode is
      * left alone.
+     *
+     * The profile's game mode goes through [ProfileGameMode], which saves the game's own mode in
+     * [gameModeStore] first so the session end puts it back. Not [store]: a full restore of the
+     * system snapshot clears that whole file.
      */
     fun applyProfile(
         profile: BoostProfile,
         gamePackage: String,
         store: KeyValueStore,
+        gameModeStore: KeyValueStore,
         keepGameMode: Boolean = false
     ): StepReport {
         if (!shell.isAvailable()) return StepReport(unavailable = true)
@@ -413,7 +406,10 @@ object RamCleaner {
         // After the force-stops, so the memory they released is reclaimable.
         if (profile.dropCaches) report.record("Kernel caches", dropKernelCaches())
 
-        if (!keepGameMode) report.record("Game mode", applyGameMode(profile.gameMode, gamePackage))
+        if (!keepGameMode) {
+            val mode = ProfileGameMode.apply(shell, gameModeStore, gamePackage, profile.gameMode)
+            report.record(if (mode.ok) "Game mode" else "Game mode (${mode.detail})", mode.ok)
+        }
 
         if (profile.suppressInterruptions) report.record("Do Not Disturb", suppressSystemInterruptions())
         if (profile.trimAnimations) report.record("Animations", optimizeTouchInput())
