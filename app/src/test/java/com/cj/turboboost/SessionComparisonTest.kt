@@ -50,6 +50,37 @@ class SessionComparisonTest {
     }
 
     @Test
+    fun `baselines and boosted runs, and runs under different game states, never share a group`() {
+        val records = listOf(
+            run(1).copy(profile = SessionRecord.BASELINE, gameStateStart = "standard"),
+            run(2).copy(profile = SessionRecord.BASELINE, gameStateStart = "standard"),
+            run(3).copy(profile = "BALANCED", gameStateStart = "standard"),
+            run(4).copy(profile = "BALANCED", gameStateStart = "custom;4=0.6/60")
+        )
+        val groups = SessionComparison.groups(records, FAKE_GAME)
+        assertEquals(3, groups.size)
+        assertEquals(2, groups.first { it.key.profile == SessionRecord.BASELINE }.runs)
+        assertEquals(
+            "BALANCED, 90 Hz, default, no cap, mode custom 4=0.6/60",
+            SessionGroupKey(90f, "default", null, "BALANCED", "custom;4=0.6/60").label
+        )
+    }
+
+    @Test
+    fun `restarted, contaminated and invalid baseline sessions are left out and counted, unknown ones kept`() {
+        val records = listOf(
+            run(1).copy(profile = SessionRecord.BASELINE, gameStateStart = "standard", contamination = Contamination.CLEAN.name),
+            run(2).copy(profile = SessionRecord.BASELINE, gameStateStart = "standard;2=0.8/90"),
+            run(3).copy(profile = SessionRecord.BASELINE, gameStateStart = "standard", contamination = Contamination.CONTAMINATED.name),
+            run(4).copy(profile = SessionRecord.BASELINE, gameStateStart = "standard", endReason = EndReason.RESTARTED.code),
+            run(5).copy(profile = SessionRecord.BASELINE, gameStateStart = "standard", contamination = Contamination.UNKNOWN.name)
+        )
+        assertEquals(2, SessionComparison.groups(records, FAKE_GAME).single().runs)
+        assertEquals(3, SessionComparison.excludedCount(records, FAKE_GAME))
+        assertEquals(0, SessionComparison.excludedCount(records, "com.example.other"))
+    }
+
+    @Test
     fun `medians skip missing values and say how many runs had data`() {
         val stats = SessionComparison.stats(
             SessionGroupKey(90f, "default", 40),

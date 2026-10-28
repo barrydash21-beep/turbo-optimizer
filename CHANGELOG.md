@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- MEASURE ONLY, under BOOST: launches the selected game and records a session without changing anything (no background restriction, RAM purge, profile, refresh rate, stabilizer or preset), as a baseline to compare boosts with. It refuses to start while a boost's changes, a resolution preset or FPS cap, the stabilizer or another session are still on.
+- Each session records whether it was a baseline or which profile it ran under, the game's Game Manager mode and configs at its start and end, and how much of it was sampled.
+- Each session checks whether another app changed the game's mode or configs since this app last saw them, at its start and its end. A mode reset by a phone restart is expected; a changed config is not. With nothing to compare with, it says unknown.
+- The Session comparison groups sessions by profile and the game's mode and configs too, so baselines and boosts never share a group. It leaves out sessions another app changed, sessions whose game restarted, and baselines that ran with a Game Manager config, and says how many it left out.
+
 ### Changed
+- Diagnostics and the lower-rate suggestion ignore baselines.
 - A session is now watched by a small helper that runs through Shizuku. On phones that freeze apps in the background (seen on HiOS 16, which froze the app 5 s after the game opened even with its notification showing), the app measured nothing and only put your settings back when you next opened it. The helper keeps measuring while the app is frozen, sees the game close, and wakes the app to end the session and put your settings back.
 - Frame timing is read every 2 s while the helper runs, instead of every 30 s. When the helper can't start, the app monitors the session itself as before.
 - A session ends in two steps: it is marked as ending before anything is put back, and as ended only once every setting reads back. One left unfinished (the app was closed, or a setting didn't stick) is finished the next time any path ends it, including the next app start, without saving its record twice.

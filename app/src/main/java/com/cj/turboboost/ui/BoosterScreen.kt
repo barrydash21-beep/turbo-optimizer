@@ -54,11 +54,13 @@ import com.cj.turboboost.AppPackages
 import com.cj.turboboost.BackgroundRestrictor
 import com.cj.turboboost.BoostProfile
 import com.cj.turboboost.CheckStatus
+import com.cj.turboboost.Contamination
 import com.cj.turboboost.DiagnosticsUi
 import com.cj.turboboost.DisplayState
 import com.cj.turboboost.EndReason
 import com.cj.turboboost.FpsCap
 import com.cj.turboboost.GameRegistry
+import com.cj.turboboost.GameStateRef
 import com.cj.turboboost.GameResolutionUi
 import com.cj.turboboost.GroupStats
 import com.cj.turboboost.InstalledGame
@@ -74,6 +76,7 @@ import com.cj.turboboost.SystemTelemetry
 import com.cj.turboboost.VpnState
 import kotlinx.coroutines.delay
 import java.util.Locale
+import kotlin.math.roundToInt
 
 // ---------------------------------------------------------------------------
 // State models
@@ -143,6 +146,7 @@ fun BoosterScreen(
     summary: SessionRecord?,
     summarySuggestion: Float?,
     onBoost: () -> Unit,
+    onMeasure: () -> Unit,
     onStopVpn: () -> Unit,
     onRestore: () -> Unit,
     onProfileChange: (BoostProfile) -> Unit,
@@ -285,7 +289,11 @@ fun BoosterScreen(
                 onClick = onBoost
             )
 
-            Spacer(Modifier.height(36.dp))
+            Spacer(Modifier.height(8.dp))
+
+            MeasureButton(enabled = !busy && selected != null, onClick = onMeasure)
+
+            Spacer(Modifier.height(28.dp))
 
             StepTracker(current = step, includeStabilizing = vpnEnabled)
 
@@ -1420,6 +1428,19 @@ private fun renderResolutionText(value: String?): String = when {
 
 private fun fpsText(fps: Float?): String = fps?.let { String.format(Locale.US, "%.1f", it) } ?: "unavailable"
 
+private fun profileText(profile: String?): String = when (profile) {
+    null -> "not recorded"
+    SessionRecord.BASELINE -> "baseline, nothing changed"
+    else -> BoostProfile.entries.firstOrNull { it.name == profile }?.label ?: profile
+}
+
+private fun contaminationText(raw: String?): String = when (Contamination.fromName(raw)) {
+    Contamination.CLEAN -> "no"
+    Contamination.CONTAMINATED -> "yes"
+    Contamination.UNKNOWN -> "unknown: no earlier state to compare with"
+    null -> "not checked"
+}
+
 private fun endReasonText(code: String?): String = when (EndReason.fromCode(code)) {
     EndReason.EXITED -> "game closed"
     EndReason.RESTARTED -> "game restarted, not compared"
@@ -1469,7 +1490,8 @@ private fun SessionSummary(
                 Text(name, color = Tac.TextHi, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(16.dp))
 
-                SummaryRow("Refresh rate chosen", "$rateHz Hz")
+                SummaryRow("Session", profileText(record.profile))
+                SummaryRow(if (record.isBaseline) "Refresh rate held" else "Refresh rate chosen", "$rateHz Hz")
                 SummaryRow(
                     "Peak rate the system held",
                     record.observedPeak?.let { peak ->
@@ -1480,8 +1502,21 @@ private fun SessionSummary(
                 SummaryRow("Render resolution", renderResolutionText(record.renderResolution))
                 AliveRow("Restricted apps alive at ${BackgroundRestrictor.ALIVE_CHECK_DELAY_MS / 1000} s", record.restrictedAliveEarly)
                 AliveRow("Restricted apps alive at end", record.restrictedAliveAtEnd)
+                // Every session saved since these existed has a profile; one without predates them.
+                val recorded = record.profile != null
+                SummaryRow("Game mode at start", if (recorded) GameStateRef.display(record.gameStateStart) else "not recorded")
+                SummaryRow("Game mode at end", if (recorded) GameStateRef.display(record.gameStateEnd) else "not recorded")
+                SummaryRow("Changed by another app", contaminationText(record.contamination))
                 SummaryRow("Duration", durationText(record.durationMs))
                 SummaryRow("Ended", endReasonText(record.endReason))
+                SummaryRow(
+                    "Sampled",
+                    when {
+                        !recorded -> "not recorded"
+                        record.continuity == null -> "too short to say"
+                        else -> "${(record.continuity * 100).roundToInt()}% of the session"
+                    }
+                )
                 SummaryRow("Average FPS", fpsText(record.avgFps))
                 SummaryRow("1% low FPS", fpsText(record.onePercentLowFps))
                 SummaryRow("Time to thermal status 1+", timeToThermal)
@@ -1490,6 +1525,20 @@ private fun SessionSummary(
                     "Samples",
                     "${record.samples} (FPS in ${record.fpsSamples}, thermal in ${record.thermalSamples})"
                 )
+
+                if (record.baselineInvalid || record.contaminated || record.gameRestarted) {
+                    Spacer(Modifier.height(14.dp))
+                    Text(
+                        "Left out of the Session comparison: " + listOfNotNull(
+                            "the game held a Game Manager config, so it is not a baseline".takeIf { record.baselineInvalid },
+                            "another app changed the game's mode or config".takeIf { record.contaminated },
+                            "the game restarted mid-session".takeIf { record.gameRestarted }
+                        ).joinToString("; ") + ".",
+                        color = Tac.Amber,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                }
 
                 if (suggestion != null) {
                     Spacer(Modifier.height(14.dp))
@@ -1700,6 +1749,17 @@ private fun SessionComparisonSection(
                     ComparisonTable(a, b)
                 }
             }
+            val left = if (gamePackage != null && sessions != null) SessionComparison.excludedCount(sessions, gamePackage) else 0
+            if (left > 0) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "$left ${if (left == 1) "session is" else "sessions are"} left out: the game restarted mid-session, " +
+                        "another app changed its game mode, or a baseline ran with a Game Manager config.",
+                    color = Tac.Amber,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
+                )
+            }
             Spacer(Modifier.height(8.dp))
             Text(
                 "Only the newest ${SessionStore.MAX_SESSIONS} sessions are kept. Each median uses only the runs " +
@@ -1781,6 +1841,32 @@ private fun ComparisonTable(a: GroupStats, b: GroupStats) {
             color = Tac.Amber,
             fontSize = 11.sp,
             lineHeight = 16.sp
+        )
+    }
+}
+
+/** Launches the game under the monitor with nothing changed, for a baseline to compare boosts with. */
+@Composable
+private fun MeasureButton(enabled: Boolean, onClick: () -> Unit) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(38.dp)
+            .semantics {
+                role = Role.Button
+                contentDescription = "Measure only: launch the game and record a baseline session without changing anything"
+            },
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Text(
+            "MEASURE ONLY · NO CHANGES",
+            fontSize = 10.sp,
+            color = if (enabled) Tac.Cyan else Tac.TextLo.copy(alpha = 0.4f),
+            fontWeight = FontWeight.Black,
+            letterSpacing = 2.sp,
+            fontFamily = Mono
         )
     }
 }

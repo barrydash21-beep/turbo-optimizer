@@ -1106,3 +1106,81 @@ class GameResolutionTest {
         assertNull(GameResolution.status(shell, store, game).changedOutside)
     }
 }
+
+class GameStateRefTest {
+
+    private val pkg = FAKE_GAME
+
+    @Test
+    fun `the state text holds the mode and every config in mode order, and only that text is kept`() {
+        val both = GameStateRef.text("custom", mapOf(4 to InterventionConfig("0.6", "60"), 2 to InterventionConfig("0.8", "90")))
+        assertEquals("custom;2=0.8/90;4=0.6/60", both)
+        assertEquals("standard", GameStateRef.text("standard", emptyMap()))
+        assertTrue(GameStateRef.hasConfigs(both))
+        assertFalse(GameStateRef.hasConfigs("standard"))
+        assertEquals("custom 2=0.8/90, 4=0.6/60", GameStateRef.display(both))
+        assertEquals("unreadable", GameStateRef.display(null))
+
+        val store = FakeStore()
+        GameStateRef.save(store, pkg, "custom;4=0.6/60|x", "boot-1")
+        assertNull(GameStateRef.reference(store, pkg))
+        GameStateRef.save(store, pkg, both, "boot-1")
+        assertEquals("boot-1" to both, GameStateRef.reference(store, pkg))
+    }
+
+    @Test
+    fun `the state is read straight from cmd game, custom mode offered or not`() {
+        val shell = GameShell(pkg, mode = "custom", configs = mutableMapOf(4 to ("0.6" to "60")))
+        assertEquals("custom;4=0.6/60", GameStateRef.read(shell, pkg))
+        assertEquals("standard", GameStateRef.read(GameShell(pkg, available = listOf("standard")), pkg))
+        assertNull(GameStateRef.read(GameShell(pkg, isGame = false), pkg))
+        assertNull(GameStateRef.read(shell, "not a package"))
+    }
+
+    @Test
+    fun `a config change is contamination even across a restart, a mode change only within one boot`() {
+        val ref = "boot-1" to "custom;4=0.6/60"
+        assertEquals(Contamination.CLEAN, GameStateRef.compare(ref, "custom;4=0.6/60", "boot-1"))
+        assertEquals(Contamination.CONTAMINATED, GameStateRef.compare(ref, "custom;4=0.8/90", "boot-1"))
+        assertEquals(Contamination.CONTAMINATED, GameStateRef.compare(ref, "custom;4=0.8/90", "boot-2"))
+        assertEquals(Contamination.CONTAMINATED, GameStateRef.compare(ref, "custom;2=0.8/90;4=0.6/60", "boot-2"))
+        // A restart puts the game back in standard mode and keeps the configs.
+        assertEquals(Contamination.CLEAN, GameStateRef.compare(ref, "standard;4=0.6/60", "boot-2"))
+        assertEquals(Contamination.CONTAMINATED, GameStateRef.compare(ref, "standard;4=0.6/60", "boot-1"))
+        assertEquals(Contamination.CONTAMINATED, GameStateRef.compare(null to "custom;4=0.6/60", "standard;4=0.6/60", "boot-2"))
+    }
+
+    @Test
+    fun `no reference, or a state that cannot be read, is unknown`() {
+        assertEquals(Contamination.UNKNOWN, GameStateRef.compare(null, "standard", "boot-1"))
+        assertEquals(Contamination.UNKNOWN, GameStateRef.compare("boot-1" to "standard", null, "boot-1"))
+        assertEquals(Contamination.CONTAMINATED, Contamination.worst(Contamination.UNKNOWN, Contamination.CONTAMINATED))
+        assertEquals(Contamination.UNKNOWN, Contamination.worst(Contamination.CLEAN, null))
+        assertEquals(Contamination.CLEAN, Contamination.worst(Contamination.CLEAN, Contamination.CLEAN))
+    }
+
+    @Test
+    fun `every change this app makes moves the reference, so only a change from outside differs`() {
+        val shell = GameShell(pkg)
+        val store = FakeStore()
+        GameStateRef.save(store, pkg, GameStateRef.read(shell, pkg), shell.bootId)
+
+        assertTrue(GameResolution.apply(shell, store, pkg, ResolutionLevel.LOW, null).ok)
+        assertEquals(Contamination.CLEAN, GameStateRef.check(shell, store, pkg).second)
+
+        // Another app writes the game's custom config.
+        shell.configs[4] = "0.8" to "90"
+        assertEquals(Contamination.CONTAMINATED, GameStateRef.check(shell, store, pkg).second)
+
+        assertTrue(GameResolution.restore(shell, store, pkg, force = true, runningPid = null).ok)
+        assertEquals(Contamination.CLEAN, GameStateRef.check(shell, store, pkg).second)
+
+        // A restart takes the game out of a preset; setting it again is this app's own change.
+        assertTrue(GameResolution.apply(shell, store, pkg, ResolutionLevel.LOW, null).ok)
+        shell.bootId = "boot-2"
+        shell.mode = "standard"
+        assertEquals(Contamination.CLEAN, GameStateRef.check(shell, store, pkg).second)
+        assertTrue(GameResolution.reapplyBeforeLaunch(shell, store, pkg)!!.ok)
+        assertEquals(Contamination.CLEAN, GameStateRef.check(shell, store, pkg).second)
+    }
+}

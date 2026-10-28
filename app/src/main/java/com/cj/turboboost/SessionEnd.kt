@@ -41,6 +41,8 @@ class SessionContext(
     val tuner: KeyValueStore,
     val restrictions: KeyValueStore,
     val sessions: SessionStore,
+    /** Where [GameStateRef] keeps each game's reference state. */
+    val gameResolution: KeyValueStore,
     val elapsedNow: () -> Long,
     val wallNow: () -> Long
 ) {
@@ -51,6 +53,7 @@ class SessionContext(
             tuner = Stores.tuner(context),
             restrictions = Stores.restrictions(context),
             sessions = SessionStore(Stores.sessions(context)),
+            gameResolution = Stores.gameResolution(context),
             elapsedNow = SystemClock::elapsedRealtime,
             wallNow = System::currentTimeMillis
         )
@@ -96,8 +99,16 @@ object SessionEnd {
     private const val KEY_RECORD_SAVED = "record_saved"
     private const val KEY_REASON = "end_reason"
 
+    /** [SessionRecord.profile]: the boost profile's name, or [SessionRecord.BASELINE]. */
+    private const val KEY_KIND = "kind"
+
+    /** The game's state read once the session's own changes were made, and the start check. */
+    private const val KEY_STATE_START = "game_state_start"
+    private const val KEY_CHECK_START = "check_start"
+
     private val SESSION_KEYS = listOf(
-        KEY_TOKEN, KEY_PACKAGE, KEY_RATE, KEY_RESOLUTION, KEY_FPS_CAP, KEY_WATCHER, KEY_ALIVE_EARLY, KEY_REASON
+        KEY_TOKEN, KEY_PACKAGE, KEY_RATE, KEY_RESOLUTION, KEY_FPS_CAP, KEY_WATCHER, KEY_ALIVE_EARLY, KEY_REASON,
+        KEY_KIND, KEY_STATE_START, KEY_CHECK_START
     )
 
     /** The only uids that may end a session: the shell Shizuku runs as, and root. */
@@ -131,13 +142,27 @@ object SessionEnd {
     fun noteAliveEarly(store: KeyValueStore, alive: List<String>?) =
         store.putStringNow(KEY_ALIVE_EARLY, alive?.joinToString(",")?.ifEmpty { NONE })
 
+    /** The kind of the open session: a [BoostProfile] name, or [SessionRecord.BASELINE]. */
+    fun kind(store: KeyValueStore): String? = store.getString(KEY_KIND)
+
     /**
-     * Starts a session for [pkg] under [token]. A session still open is closed first through
+     * Starts a session for [pkg] under [token]. [kind] is the profile's name or
+     * [SessionRecord.BASELINE]; [startCheck] is the game's state checked against its reference
+     * before the boost changed anything. A session still open is closed first through
      * [replace]: its record is kept, nothing it changed is restored, since the new boost holds
      * the same changes on.
      */
     @Synchronized
-    fun begin(ctx: SessionContext, pkg: String, rate: Float, renderResolution: String?, fpsCap: Int?, token: String) {
+    fun begin(
+        ctx: SessionContext,
+        pkg: String,
+        rate: Float,
+        renderResolution: String?,
+        fpsCap: Int?,
+        token: String,
+        kind: String? = null,
+        startCheck: Contamination? = null
+    ) {
         val store = ctx.session
         if (state(store) == STATE_ACTIVE || state(store) == STATE_ENDING) replace(ctx)
         SESSION_KEYS.forEach { store.putStringNow(it, null) }
@@ -148,8 +173,21 @@ object SessionEnd {
         store.putStringNow(KEY_RATE, RefreshRate.format(rate))
         store.putStringNow(KEY_RESOLUTION, renderResolution)
         store.putStringNow(KEY_FPS_CAP, fpsCap?.toString())
+        store.putStringNow(KEY_KIND, kind)
+        store.putStringNow(KEY_CHECK_START, (startCheck ?: Contamination.UNKNOWN).name)
         // Last: the state is what marks a session as present.
         store.putStringNow(KEY_STATE, STATE_ACTIVE)
+    }
+
+    /**
+     * Records the game's state the session starts under, after the boost's own changes, and
+     * makes it the reference the end is checked against. Null when it could not be read.
+     */
+    fun observeStart(ctx: SessionContext, pkg: String): String? {
+        val state = GameStateRef.read(ctx.shell, pkg)
+        ctx.session.putStringNow(KEY_STATE_START, state)
+        GameStateRef.save(ctx.gameResolution, pkg, state, GameResolution.bootId(ctx.shell))
+        return state
     }
 
     /** Closes the open session's record without restoring anything, and stops its watcher. */
@@ -210,6 +248,7 @@ object SessionEnd {
             store.putStringNow(KEY_STATE, STATE_ENDING)
         }
         val record = if (open) saveRecord(ctx, reason) else null
+        val pkg = store.getString(KEY_PACKAGE)
 
         val tweaks = PerformanceTuner.revertGamingTweaks(ctx.tuner)
         val restricted = BackgroundRestrictor.restore(ctx.shell, ctx.restrictions)
@@ -217,6 +256,11 @@ object SessionEnd {
         // A reboot soon after can bring the restricted bucket back: checked at the next app start.
         if (restricted.ok && restricted.packages.isNotEmpty()) {
             BucketRecheck.remember(ctx.shell, ctx.restrictions, restricted, GameResolution.bootId(ctx.shell))
+        }
+
+        // What the game holds once this session's own changes are undone is the next session's reference.
+        if (open && pkg != null && ctx.shell.isAvailable()) {
+            GameStateRef.save(ctx.gameResolution, pkg, GameStateRef.read(ctx.shell, pkg), GameResolution.bootId(ctx.shell))
         }
 
         val restored = tweaks.ok && restricted.ok
@@ -246,7 +290,9 @@ object SessionEnd {
         val watcher = watcherHeld(store)
         if (watcher && !ctx.shell.isAvailable()) return false
         val data = if (watcher) SessionWatcher.collect(ctx.shell) else null
-        buildRecord(ctx, data, store.getString(KEY_REASON) ?: reason.code)?.let { record ->
+        // Before anything is restored, so it is the state the session ended under.
+        val end = store.getString(KEY_PACKAGE)?.takeIf { ctx.shell.isAvailable() }?.let { GameStateRef.check(ctx.shell, ctx.gameResolution, it) }
+        buildRecord(ctx, data, store.getString(KEY_REASON) ?: reason.code, end)?.let { record ->
             ctx.sessions.save(record)
             log { Log.i(TAG, "Session saved: ${record.encode()}") }
             onSaved(record)
@@ -258,9 +304,15 @@ object SessionEnd {
 
     /**
      * The record, from the watcher's data when it saw the game, else from in-process samples.
-     * Null when the game was never seen running, as before.
+     * Null when the game was never seen running, as before. [end] is the game's state read at
+     * the end, and its check; null when it could not be read.
      */
-    internal fun buildRecord(ctx: SessionContext, data: WatcherData?, reasonCode: String): SessionRecord? {
+    internal fun buildRecord(
+        ctx: SessionContext,
+        data: WatcherData?,
+        reasonCode: String,
+        end: Pair<String?, Contamination>? = null
+    ): SessionRecord? {
         val store = ctx.session
         val inProcess = live
         val pkg = store.getString(KEY_PACKAGE) ?: inProcess?.packageName ?: return null
@@ -278,7 +330,31 @@ object SessionEnd {
         if (store.getString(KEY_ALIVE_EARLY) != null) session.restrictedAliveEarly = decodeList(store.getString(KEY_ALIVE_EARLY))
         session.restrictedAliveAtEnd = BackgroundRestrictor.alive(ctx.shell, ctx.restrictions)
         val endAt = watched?.endedAtMs ?: now
-        return session.finish(endAt).copy(endReason = watched?.endReason ?: reasonCode)
+        val record = session.finish(endAt)
+        val continuity = if (watched != null) {
+            continuity(watched.frameReads, record.durationMs, SessionWatcher.FRAME_READ_MS.toLong())
+        } else {
+            continuity(record.samples, record.durationMs, GameMonitorService.SAMPLE_MS)
+        }
+        return record.copy(
+            endReason = watched?.endReason ?: reasonCode,
+            profile = store.getString(KEY_KIND),
+            gameStateStart = store.getString(KEY_STATE_START),
+            gameStateEnd = end?.first,
+            contamination = Contamination.worst(Contamination.fromName(store.getString(KEY_CHECK_START)), end?.second).name,
+            continuity = continuity
+        )
+    }
+
+    /**
+     * Reads taken over reads due at [intervalMs] across [durationMs], at most 1. Null when no
+     * full interval passed, or nothing was read on a cadence (an interval of 0).
+     */
+    internal fun continuity(reads: Int, durationMs: Long, intervalMs: Long): Float? {
+        if (intervalMs <= 0L) return null
+        val due = durationMs / intervalMs
+        if (due < 1L) return null
+        return (reads.toFloat() / due).coerceAtMost(1f)
     }
 
     private fun decodeList(field: String?): List<String>? = when {

@@ -18,6 +18,26 @@ private class SessionShell(private val log: MutableList<String>) : ShellExecutor
     var data: String? = null
     val system = mutableMapOf("min_refresh_rate" to "10.0", "peak_refresh_rate" to "120")
 
+    /** The game's GameManager state, in the formats `cmd game` prints on the Pova 7. */
+    var gameMode = "standard"
+    val gameConfigs = mutableMapOf<Int, Pair<String, String>>()
+    var boot = "boot-1"
+
+    private fun game(command: String): String? {
+        val pkg = command.split(" ").getOrNull(3) ?: return null
+        return when {
+            command.startsWith("cmd game list-modes") -> "$pkg current mode: $gameMode, available game modes: [standard,custom]"
+            command.startsWith("cmd game list-configs") -> if (gameConfigs.isEmpty()) {
+                "$pkg interventions: \n No intervention found for package $pkg"
+            } else {
+                "$pkg interventions: \n[Name:$pkg Modes: {" + gameConfigs.toSortedMap().entries.joinToString(", ") { (id, c) ->
+                    "$id=[Game Mode:$id,Scaling:${c.first},Use Angle:false,Fps:${c.second},Loading Boost Duration:-1]"
+                } + "}]"
+            }
+            else -> null
+        }
+    }
+
     override fun isAvailable() = available
 
     override fun run(command: String): ShellResult {
@@ -37,7 +57,10 @@ private class SessionShell(private val log: MutableList<String>) : ShellExecutor
     override fun capture(command: String): String? {
         if (!available) return null
         log += "capture:$command"
+        val marker = " 2>&1; echo \"__exit:\$?\""
+        if (command.endsWith(marker)) return game(command.removeSuffix(marker))?.let { "$it\n__exit:0" }
         return when {
+            command == "cat /proc/sys/kernel/random/boot_id" -> boot
             command.startsWith("settings get system") -> system[command.split(" ")[3]] ?: "null"
             command == "cat ${SessionWatcher.DATA}" -> data
             command.startsWith("cmd power") -> "exit=0"
@@ -75,6 +98,7 @@ class SessionEndTest {
         tuner = tuner,
         restrictions = FakeStore(),
         sessions = sessions,
+        gameResolution = FakeStore(),
         elapsedNow = { 200_000L },
         wallNow = { 1_000_000L }
     )
@@ -297,6 +321,81 @@ class SessionEndTest {
 
         store.putString("state", SessionEnd.STATE_ENDED)
         assertFalse(needs(monitor = false, watcher = false))
+    }
+
+    /** A monitor-only session: nothing held, the start observed, as the monitor begins one. */
+    private fun baseline(startCheck: Contamination? = Contamination.CLEAN) {
+        SessionEnd.begin(ctx, FAKE_GAME, 120f, "default", null, token, SessionRecord.BASELINE, startCheck)
+        SessionEnd.noteWatcher(ctx.session, true)
+        SessionEnd.observeStart(ctx, FAKE_GAME)
+    }
+
+    @Test
+    fun `a baseline records its kind, the state it ran under and a clean check, and restores nothing`() {
+        baseline()
+        shell.data = watched()
+        log.clear()
+
+        val outcome = SessionEnd.finish(ctx, EndReason.EXITED)
+        val record = outcome.record!!
+
+        assertTrue(outcome.ok)
+        assertTrue(record.isBaseline)
+        assertEquals("standard", record.gameStateStart)
+        assertEquals("standard", record.gameStateEnd)
+        assertEquals(Contamination.CLEAN.name, record.contamination)
+        assertFalse(record.baselineInvalid)
+        // Nothing was held, so nothing was written to the phone's settings or the game.
+        assertFalse(log.any { it.startsWith("run:settings") || it.startsWith("run:cmd") })
+    }
+
+    @Test
+    fun `a baseline that starts with a Game Manager config in any mode is invalid`() {
+        shell.gameConfigs[2] = "0.8" to "90"
+        baseline()
+        shell.data = watched()
+        val record = SessionEnd.finish(ctx, EndReason.EXITED).record!!
+        assertEquals("standard;2=0.8/90", record.gameStateStart)
+        assertTrue(record.baselineInvalid)
+        assertTrue(SessionComparison.excluded(record))
+    }
+
+    @Test
+    fun `a config another app sets mid-session is contamination, and the next session's reference`() {
+        boost()
+        SessionEnd.observeStart(ctx, FAKE_GAME)
+        shell.data = watched()
+        shell.gameConfigs[4] = "0.6" to "60"
+
+        val record = SessionEnd.finish(ctx, EndReason.EXITED).record!!
+
+        assertEquals(Contamination.CONTAMINATED.name, record.contamination)
+        assertEquals("standard;4=0.6/60", record.gameStateEnd)
+        assertTrue(record.contaminated)
+        assertEquals("standard;4=0.6/60", GameStateRef.reference(ctx.gameResolution, FAKE_GAME)!!.second)
+        // Unchanged since, the next session starts clean against it.
+        assertEquals(Contamination.CLEAN, GameStateRef.check(shell, ctx.gameResolution, FAKE_GAME).second)
+    }
+
+    @Test
+    fun `a session with nothing to compare its start with is unknown, not clean`() {
+        baseline(startCheck = null)
+        shell.data = watched()
+        assertEquals(Contamination.UNKNOWN.name, SessionEnd.finish(ctx, EndReason.EXITED).record!!.contamination)
+    }
+
+    @Test
+    fun `continuity is reads taken over reads due, and the watcher's file gives it`() {
+        assertEquals(1f, SessionEnd.continuity(25, 50_000L, 2_000L)!!, 0f)
+        assertEquals(0.4f, SessionEnd.continuity(10, 50_000L, 2_000L)!!, 0.0001f)
+        assertEquals(1f, SessionEnd.continuity(30, 50_000L, 2_000L)!!, 0f)
+        assertNull(SessionEnd.continuity(0, 1_000L, 2_000L))
+        assertNull(SessionEnd.continuity(5, 50_000L, 0L))
+
+        boost()
+        shell.data = watched()
+        // One frame read over 50 s at a 2 s cadence: 1 of 25.
+        assertEquals(0.04f, SessionEnd.finish(ctx, EndReason.EXITED).record!!.continuity!!, 0.0001f)
     }
 
     @Test

@@ -253,11 +253,39 @@ class SessionStoreTest {
     @Test
     fun `the end reason round trips as field 17, and a restarted game is flagged`() {
         val restarted = record(13L).copy(endReason = EndReason.RESTARTED.code)
-        assertEquals(17, restarted.encode().split('|').size)
+        assertEquals("restarted", restarted.encode().split('|')[16])
         assertEquals(restarted, SessionRecord.decode(restarted.encode()))
         assertTrue(restarted.gameRestarted)
         assertFalse(record(14L).copy(endReason = EndReason.EXITED.code).gameRestarted)
         assertNull(SessionRecord.decode(record(15L).encode())!!.endReason)
+    }
+
+    @Test
+    fun `profile, game state, contamination and continuity round trip as fields 18 to 22`() {
+        val full = record(16L).copy(
+            endReason = "exited", profile = SessionRecord.BASELINE, gameStateStart = "standard",
+            gameStateEnd = "custom;4=0.6/60", contamination = Contamination.CONTAMINATED.name, continuity = 0.97f
+        )
+        val fields = full.encode().split('|')
+        assertEquals(22, fields.size)
+        assertEquals(listOf("BASELINE", "standard", "custom;4=0.6/60", "CONTAMINATED", "0.97"), fields.subList(17, 22))
+        assertEquals(full, SessionRecord.decode(full.encode()))
+        // A record from the build before: 17 fields, none of these.
+        val v6 = SessionRecord.decode(fields.subList(0, 17).joinToString("|"))!!
+        assertEquals("exited", v6.endReason)
+        assertNull(v6.profile)
+        assertNull(v6.continuity)
+        assertFalse(v6.isBaseline)
+    }
+
+    @Test
+    fun `a baseline is invalid with any config at the start, or a start that could not be read`() {
+        val base = record(17L).copy(profile = SessionRecord.BASELINE)
+        assertFalse(base.copy(gameStateStart = "standard").baselineInvalid)
+        assertTrue(base.copy(gameStateStart = "standard;2=0.8/90").baselineInvalid)
+        assertTrue(base.copy(gameStateStart = null).baselineInvalid)
+        // A boosted session with a config is not a baseline at all.
+        assertFalse(base.copy(profile = "BALANCED", gameStateStart = "custom;4=0.6/60").baselineInvalid)
     }
 
     @Test

@@ -82,8 +82,11 @@ class MainActivity : ComponentActivity() {
                 notificationDenialShown = true
                 toast("Notifications off - the game monitor runs without showing its notification")
             }
-            viewModel.onBoostRequested()
+            afterNotifications()
         }
+
+    /** BOOST or MEASURE ONLY, whichever asked for the notification permission. */
+    private var afterNotifications: () -> Unit = {}
 
     /** Once per launch: after two denials Android answers instantly, which would toast every boost. */
     private var notificationDenialShown = false
@@ -120,7 +123,8 @@ class MainActivity : ComponentActivity() {
                     shizuku = viewModel.shizukuState,
                     vpnState = vpnState,
                     step = viewModel.step,
-                    onBoost = ::requestNotificationsThenBoost,
+                    onBoost = { requestNotificationsThen { viewModel.onBoostRequested() } },
+                    onMeasure = { requestNotificationsThen { viewModel.onMeasureRequested() } },
                     profile = viewModel.profile,
                     vpnEnabled = viewModel.vpnEnabled,
                     games = viewModel.games,
@@ -252,14 +256,16 @@ class MainActivity : ComponentActivity() {
         startActivity(launch)
     }
 
-    private fun requestNotificationsThenBoost() {
+    /** Both start the game monitor and its notification, so both ask for the permission first. */
+    private fun requestNotificationsThen(action: () -> Unit) {
         val needed = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         if (needed) {
+            afterNotifications = action
             notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            viewModel.onBoostRequested()
+            action()
         }
     }
 

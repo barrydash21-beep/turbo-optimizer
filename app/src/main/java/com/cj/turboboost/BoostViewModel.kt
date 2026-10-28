@@ -346,7 +346,8 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     GameRegistry.DEFAULT_RATES,
                     SystemTelemetry.getSupportedRefreshRates(getApplication())
                 )
-            summarySuggestion = Diagnostics.suggestion(record, supported)
+            // A baseline ran at the rate the system chose, not one picked here: nothing to suggest.
+            summarySuggestion = if (record.isBaseline) null else Diagnostics.suggestion(record, supported)
             summary = record
         }
     }
@@ -540,6 +541,83 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** What a baseline starts with: why it can't, or the game's state, its check and the rate held. */
+    private data class BaselineStart(
+        val refusal: String? = null,
+        val state: String? = null,
+        val check: Contamination? = null,
+        val rate: Float = 0f
+    )
+
+    /**
+     * MEASURE ONLY: launches the selected game under the monitor with nothing changed, to record
+     * a baseline the boosted sessions are compared with. Refused while anything a boost changes
+     * is still held ([Baseline.refusal]). Needs Shizuku, which the watcher reads the game through.
+     */
+    fun onMeasureRequested() {
+        if (step != BoostStep.IDLE || boostJob?.isActive == true) return
+        val (game, chosenRate) = selectedTarget() ?: run {
+            viewModelScope.launch { _events.send(BoostEvent.ShowToast("Pick an installed game first")) }
+            return
+        }
+        val pkg = game.packageName
+        val app = getApplication<Application>()
+        boostJob = viewModelScope.launch {
+            try {
+                step = BoostStep.LAUNCHING
+                shizukuState = probeShizuku()
+                if (shizukuState != ShizukuState.READY) {
+                    if (shizukuState == ShizukuState.NEEDS_PERMISSION) _events.send(BoostEvent.RequestShizukuPermission)
+                    _events.send(BoostEvent.ShowToast("Measuring needs Shizuku: the game's frames and state are read through it"))
+                    return@launch
+                }
+                val start = withContext(Dispatchers.IO) { prepareBaseline(pkg, chosenRate) }
+                start.refusal?.let {
+                    _events.send(BoostEvent.ShowToast(it))
+                    return@launch
+                }
+                if (start.state == null || GameStateRef.hasConfigs(start.state)) {
+                    _events.send(BoostEvent.ShowToast("The game holds a Game Manager config - this baseline will be marked invalid"))
+                }
+                try {
+                    GameMonitorService.start(app, pkg, start.rate, SessionRecord.BASELINE, start.check)
+                } catch (e: Exception) {
+                    _events.send(BoostEvent.ShowToast("The monitor could not start - nothing measured"))
+                    return@launch
+                }
+                if (app.packageManager.getLaunchIntentForPackage(pkg) == null) {
+                    _events.send(BoostEvent.ShowToast("${gameName(pkg)} can't be launched"))
+                    // Nothing was changed: ending it only closes the session.
+                    withContext(Dispatchers.IO) { SessionEnd.finish(SessionContext.of(app), EndReason.NEVER_STARTED) }
+                    GameMonitorService.stop(app)
+                } else {
+                    pendingLaunch = pkg
+                }
+            } finally {
+                step = BoostStep.IDLE
+            }
+        }
+    }
+
+    /** The guard, then the game's state checked against its reference, and the rate the system holds now. */
+    private fun prepareBaseline(pkg: String, chosenRate: Float): BaselineStart {
+        val open = SessionEnd.state(sessionStore).let { it == SessionEnd.STATE_ACTIVE || it == SessionEnd.STATE_ENDING }
+        val held = Baseline.Held(
+            tweaks = PerformanceTuner.isActive(tunerStore),
+            restriction = BackgroundRestrictor.isActive(restrictionStore),
+            systemSnapshot = SystemSnapshot.exists(snapshot),
+            gamePreset = GameResolution.holds(resolutionStore, pkg),
+            sessionOpen = open || GameMonitorService.isRunning,
+            stabilizer = NetworkBlockerVpnService.isRunning.value
+        )
+        Baseline.refusal(held)?.let { return BaselineStart(refusal = it) }
+        val shell = RamCleaner.shell
+        val (state, check) = GameStateRef.check(shell, resolutionStore, pkg)
+        // Nothing is pinned, so the session's rate is the one the system holds.
+        val rate = shell.capture("settings get system peak_refresh_rate")?.trim()?.toFloatOrNull()?.takeIf { it > 0f } ?: chosenRate
+        return BaselineStart(state = state, check = check, rate = rate)
+    }
+
     fun onShizukuRequestFailed() {
         resumeAfterPermission = false
         viewModelScope.launch { _events.send(BoostEvent.ShowToast("Could not connect to Shizuku")) }
@@ -613,6 +691,10 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                 val restrictCandidates = if (restrictEnabled) restrictList ?: AppPackages.RESTRICT_DEFAULTS else null
 
                 if (shizukuState == ShizukuState.READY) {
+                    // Before anything changes: did another app change the game's mode or configs?
+                    val startCheck = withContext(Dispatchers.IO) {
+                        if (resolutionSupported) GameStateRef.check(RamCleaner.shell, resolutionStore, gamePackage).second else null
+                    }
                     // A phone restart puts the game back in standard mode; set its preset again first.
                     val reapplied = if (resolutionSupported) {
                         withContext(Dispatchers.IO) {
@@ -660,7 +742,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     // (c) Whatever happened above, if tweaks are on something must undo them.
                     if (PerformanceTuner.isActive(tunerStore) || BackgroundRestrictor.isActive(restrictionStore)) {
                         try {
-                            GameMonitorService.start(app, gamePackage, rate)
+                            GameMonitorService.start(app, gamePackage, rate, active.name, startCheck)
                         } catch (e: Exception) {
                             _events.send(
                                 BoostEvent.ShowToast("Exit monitor could not start - tap RESTORE after your match")
@@ -778,7 +860,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                     read to read.cap?.let { cap ->
-                        saved.lastOrNull { it.packageName == pkg && it.fpsCap == cap.fps && it.avgFps != null }
+                        saved.lastOrNull { it.packageName == pkg && !it.isBaseline && it.fpsCap == cap.fps && it.avgFps != null }
                     }
                 }
             } ?: return@launch
@@ -962,7 +1044,8 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         val probe = ready && resolutionSupported
         // The card's own status call: reads the game, files a finished measurement, nothing else.
         val status = if (probe && pkg != null) GameResolution.status(shell, resolutionStore, pkg) else null
-        val saved = if (status?.cap != null) sessions.all() else emptyList()
+        // Baselines are for the comparison: the cap's evidence comes from boosted sessions only.
+        val saved = if (status?.cap != null) sessions.all().filterNot { it.isBaseline } else emptyList()
         val capSession = status?.cap?.let { cap ->
             saved.lastOrNull { it.packageName == pkg && it.fpsCap == cap.fps && it.avgFps != null }
         }

@@ -49,6 +49,12 @@ class GameMonitorService : Service() {
 
         const val EXTRA_PACKAGE = "package"
         const val EXTRA_RATE = "rate"
+
+        /** The session's kind: a [BoostProfile] name, or [SessionRecord.BASELINE]. */
+        const val EXTRA_KIND = "kind"
+
+        /** [Contamination] name of the game's state checked before the boost changed anything. */
+        const val EXTRA_START_CHECK = "start_check"
         const val ACTION_STOP = "com.cj.turboboost.action.MONITOR_STOP"
 
         /** In the tuner store, so a restarted service knows what it was watching. */
@@ -80,13 +86,19 @@ class GameMonitorService : Service() {
 
         val isRunning: Boolean get() = _running.value
 
-        fun start(context: Context, gamePackage: String, refreshRate: Float) {
+        /**
+         * Starts monitoring a session of [gamePackage]. [kind] is the profile's name or
+         * [SessionRecord.BASELINE]; a baseline holds nothing to restore and is monitored anyway.
+         */
+        fun start(context: Context, gamePackage: String, refreshRate: Float, kind: String, startCheck: Contamination?) {
             val store = Stores.tuner(context)
             store.putString(KEY_PACKAGE, gamePackage)
             store.putString(KEY_RATE, RefreshRate.format(refreshRate))
             val intent = Intent(context, GameMonitorService::class.java)
                 .putExtra(EXTRA_PACKAGE, gamePackage)
                 .putExtra(EXTRA_RATE, refreshRate)
+                .putExtra(EXTRA_KIND, kind)
+                .putExtra(EXTRA_START_CHECK, startCheck?.name)
             context.startForegroundService(intent)
         }
 
@@ -117,7 +129,12 @@ class GameMonitorService : Service() {
         val restrictions = Stores.restrictions(applicationContext)
         val sessionState = SessionEnd.state(Stores.session(applicationContext))
         val open = sessionState == SessionEnd.STATE_ACTIVE || sessionState == SessionEnd.STATE_ENDING
-        val active = PerformanceTuner.isActive(store) || BackgroundRestrictor.isActive(restrictions) || open
+        // A sticky restart picks the session on disk back up; a new boost starts one.
+        val fresh = intent?.getStringExtra(EXTRA_PACKAGE) != null
+        val kind = intent?.getStringExtra(EXTRA_KIND)
+        // A baseline changes nothing, so nothing is held, and it is still a session to measure.
+        val baseline = fresh && kind == SessionRecord.BASELINE
+        val active = PerformanceTuner.isActive(store) || BackgroundRestrictor.isActive(restrictions) || open || baseline
         if (gamePackage == null || rate == null || !active) {
             finish()
             return START_NOT_STICKY
@@ -126,10 +143,9 @@ class GameMonitorService : Service() {
         _running.value = true
         job?.cancel()
         aliveJob?.cancel()
-        // A sticky restart picks the session on disk back up; a new boost starts one.
-        val fresh = intent?.getStringExtra(EXTRA_PACKAGE) != null
+        val startCheck = Contamination.fromName(intent?.getStringExtra(EXTRA_START_CHECK))
         job = scope.launch {
-            if (fresh) beginSession(gamePackage, rate)
+            if (fresh) beginSession(gamePackage, rate, kind, startCheck)
             watch(gamePackage, rate)
         }
         if (fresh && BackgroundRestrictor.isActive(restrictions)) {
@@ -154,7 +170,7 @@ class GameMonitorService : Service() {
      * Opens the session on disk under a fresh token and starts its watcher. A session still
      * open is closed first ([SessionEnd.begin]), keeping what it measured.
      */
-    private fun beginSession(gamePackage: String, rate: Float) {
+    private fun beginSession(gamePackage: String, rate: Float, kind: String?, startCheck: Contamination?) {
         val ctx = SessionContext.of(applicationContext)
         // Read once: a preset change reaches the game only at its next launch.
         val resolution = Stores.gameResolution(applicationContext)
@@ -162,8 +178,9 @@ class GameMonitorService : Service() {
         SessionEnd.begin(
             ctx, gamePackage, rate,
             GameResolution.sessionValue(resolution, gamePackage), GameResolution.sessionFpsCap(resolution, gamePackage),
-            token
+            token, kind, startCheck
         )
+        if (ctx.shell.isAvailable()) SessionEnd.observeStart(ctx, gamePackage)
         val started = ctx.shell.isAvailable() && runCatching {
             SessionWatcher.start(ctx.shell, gamePackage, token, SessionProvider.authority(packageName))
         }.getOrDefault(false)

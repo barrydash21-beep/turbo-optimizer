@@ -2,11 +2,23 @@ package com.cj.turboboost
 
 import kotlin.math.roundToLong
 
-/** The settings a session ran under; sessions with the same key are one group. */
-data class SessionGroupKey(val refreshRate: Float, val renderResolution: String?, val fpsCap: Int?) {
+/**
+ * The settings a session ran under; sessions with the same key are one group. [profile] keeps
+ * baselines apart from boosted sessions, and [gameState] sessions whose game ran under a
+ * different Game Manager mode or config ([GameStateRef.text]).
+ */
+data class SessionGroupKey(
+    val refreshRate: Float,
+    val renderResolution: String?,
+    val fpsCap: Int?,
+    val profile: String? = null,
+    val gameState: String? = null
+) {
     val label: String
-        get() = "${RefreshRate.display(refreshRate)} Hz, ${renderResolution ?: "resolution not recorded"}, " +
-            (fpsCap?.let { "cap $it" } ?: "no cap")
+        get() = (profile?.let { "$it, " } ?: "") +
+            "${RefreshRate.display(refreshRate)} Hz, ${renderResolution ?: "resolution not recorded"}, " +
+            (fpsCap?.let { "cap $it" } ?: "no cap") +
+            (gameState?.let { ", mode ${GameStateRef.display(it)}" } ?: "")
 }
 
 /**
@@ -41,14 +53,23 @@ object SessionComparison {
     /** Fewer runs than this in either group shows no difference. */
     const val MIN_RUNS = 3
 
-    fun keyOf(record: SessionRecord) = SessionGroupKey(record.refreshRate, record.renderResolution, record.fpsCap)
+    fun keyOf(record: SessionRecord) =
+        SessionGroupKey(record.refreshRate, record.renderResolution, record.fpsCap, record.profile, record.gameStateStart)
 
     /**
-     * [packageName]'s groups, the one played most recently first. A session whose game
-     * restarted mid-way is left out: it is not one continuous play under its settings.
+     * Whether a session is left out of every group: its game restarted mid-way, so it is not one
+     * continuous play; another app changed the game's state; or it is a baseline that ran with
+     * a Game Manager config present.
      */
+    fun excluded(record: SessionRecord): Boolean = record.gameRestarted || record.contaminated || record.baselineInvalid
+
+    /** How many of [packageName]'s sessions [excluded] leaves out. */
+    fun excludedCount(records: List<SessionRecord>, packageName: String): Int =
+        records.count { it.packageName == packageName && excluded(it) }
+
+    /** [packageName]'s groups, the one played most recently first, without the [excluded] sessions. */
     fun groups(records: List<SessionRecord>, packageName: String): List<GroupStats> =
-        records.filter { it.packageName == packageName && !it.gameRestarted }
+        records.filter { it.packageName == packageName && !excluded(it) }
             .groupBy(::keyOf)
             .map { (key, runs) -> stats(key, runs) }
             .sortedByDescending { it.newestStartedAtMs }

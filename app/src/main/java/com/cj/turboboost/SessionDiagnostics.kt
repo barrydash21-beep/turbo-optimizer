@@ -54,9 +54,35 @@ data class SessionRecord(
      * [EndReason.RESTARTED]: the game's process changed mid-session, so the run is not one
      * continuous play of the game and [SessionComparison] leaves it out.
      */
-    val endReason: String? = null
+    val endReason: String? = null,
+    /**
+     * [BoostProfile] name the session ran under, or [BASELINE] for a monitor-only session that
+     * changed nothing. Null for records from before this existed.
+     */
+    val profile: String? = null,
+    /** The game's GameManager state when the session started and ended ([GameStateRef.text]); null if unreadable. */
+    val gameStateStart: String? = null,
+    val gameStateEnd: String? = null,
+    /** [Contamination] name: whether another app changed the game's state at the start or end. */
+    val contamination: String? = null,
+    /**
+     * How much of the session was sampled, 0 to 1: reads taken over reads due at the cadence
+     * they ran at. Null when too short to say, or recorded before this existed.
+     */
+    val continuity: Float? = null
 ) {
     val gameRestarted: Boolean get() = endReason == EndReason.RESTARTED.code
+
+    val isBaseline: Boolean get() = profile == BASELINE
+
+    /**
+     * A baseline only counts when the game ran without any Game Manager config: one present
+     * at the start, in any mode, or a start that could not be read, makes it invalid.
+     */
+    val baselineInvalid: Boolean
+        get() = isBaseline && (gameStateStart == null || GameStateRef.hasConfigs(gameStateStart))
+
+    val contaminated: Boolean get() = contamination == Contamination.CONTAMINATED.name
 
     /** Average FPS is more than 15% below the chosen rate, or the device reached "moderate". */
     val struggled: Boolean
@@ -66,12 +92,19 @@ data class SessionRecord(
         packageName, RefreshRate.format(refreshRate), startedAtMs, durationMs,
         avgFps?.let { fmt(it) }, onePercentLowFps?.let { fmt(it) }, msToThermal1, maxThermal,
         samples, fpsSamples, thermalSamples, observedPeak?.let { RefreshRate.format(it) }, renderResolution,
-        encodeList(restrictedAliveEarly), encodeList(restrictedAliveAtEnd), fpsCap, endReason
+        encodeList(restrictedAliveEarly), encodeList(restrictedAliveAtEnd), fpsCap, endReason,
+        profile, gameStateStart, gameStateEnd, contamination, continuity?.let { fmt(it) }
     ).joinToString(SEP) { it?.toString() ?: "" }
 
     companion object {
+        /** [profile] of a monitor-only session. */
+        const val BASELINE = "BASELINE"
+
         private const val SEP = "|"
-        private const val FIELDS = 17
+        private const val FIELDS = 22
+
+        /** Records saved before [profile] and the game-state fields existed. */
+        private const val FIELDS_V6 = 17
 
         /** Records saved before [endReason] existed. */
         private const val FIELDS_V5 = 16
@@ -104,7 +137,7 @@ data class SessionRecord(
         /** Null for a line that is not a complete record. */
         fun decode(line: String): SessionRecord? {
             val f = line.split(SEP)
-            if (f.size !in setOf(FIELDS, FIELDS_V5, FIELDS_V4, FIELDS_V3, FIELDS_V2, FIELDS_V1) || f[0].isBlank()) return null
+            if (f.size !in setOf(FIELDS, FIELDS_V6, FIELDS_V5, FIELDS_V4, FIELDS_V3, FIELDS_V2, FIELDS_V1) || f[0].isBlank()) return null
             return runCatching {
                 SessionRecord(
                     packageName = f[0],
@@ -123,7 +156,12 @@ data class SessionRecord(
                     restrictedAliveEarly = decodeList(f.getOrNull(13)),
                     restrictedAliveAtEnd = decodeList(f.getOrNull(14)),
                     fpsCap = f.getOrNull(15)?.toIntOrNull(),
-                    endReason = f.getOrNull(16)?.takeIf { it.isNotBlank() }
+                    endReason = f.getOrNull(16)?.takeIf { it.isNotBlank() },
+                    profile = f.getOrNull(17)?.takeIf { it.isNotBlank() },
+                    gameStateStart = f.getOrNull(18)?.takeIf { it.isNotBlank() },
+                    gameStateEnd = f.getOrNull(19)?.takeIf { it.isNotBlank() },
+                    contamination = f.getOrNull(20)?.takeIf { it.isNotBlank() },
+                    continuity = f.getOrNull(21)?.toFloatOrNull()
                 )
             }.getOrNull()
         }

@@ -455,9 +455,11 @@ object GameResolution {
             // The snapshot is saved before the pending mark, so no `set` ran without one.
             snap == null -> Unit
             isAsApplied(state, scale, fps) -> {
+                val boot = bootId(shell)
                 store.putString(KEY_APPLIED + pkg, scale)
                 store.putString(KEY_APPLIED_FPS + pkg, fps)
-                store.putString(KEY_BOOT + pkg, bootId(shell))
+                store.putString(KEY_BOOT + pkg, boot)
+                GameStateRef.saveState(store, pkg, state, boot)
                 log { Log.i(TAG, "Interrupted change on $pkg completed: $pending") }
             }
             holds(store, pkg) && isAsApplied(store, pkg, state) -> Unit
@@ -515,9 +517,11 @@ object GameResolution {
         val after = read(shell, pkg).state
         log { Log.i(TAG, "Downscale $pkg -> ${scale ?: "disable"}, fps ${fps ?: "none"}: exit=${set?.first} out=${set?.second} read back=$after") }
         if (set?.first == 0 && after != null && isAsApplied(after, scale, fps)) {
+            val boot = bootId(shell)
             store.putString(KEY_APPLIED + pkg, scale)
             store.putString(KEY_APPLIED_FPS + pkg, fps)
-            store.putString(KEY_BOOT + pkg, bootId(shell))
+            store.putString(KEY_BOOT + pkg, boot)
+            GameStateRef.saveState(store, pkg, after, boot)
             store.putString(KEY_PENDING + pkg, null)
             markStale(store, pkg, runningPid)
             return GameResolutionResult(true, "${describeChoice(level, cap)} set")
@@ -569,6 +573,7 @@ object GameResolution {
         log { Log.i(TAG, "Downscale restore $pkg to $snap: failed=$failed read back=$after") }
         if (after != null && matchesSnapshot(after, snap)) {
             clearSnapshot(store, pkg)
+            GameStateRef.saveState(store, pkg, after, bootId(shell))
             markStale(store, pkg, runningPid)
             return GameResolutionResult(true, "Back to the game's default (${snap.mode})")
         }
@@ -593,7 +598,9 @@ object GameResolution {
         val after = read(shell, pkg).state
         log { Log.i(TAG, "Downscale $pkg re-applied after a restart: exit=${switched?.first} read back=$after") }
         if (switched?.first == 0 && after != null && isAsApplied(store, pkg, after)) {
-            store.putString(KEY_BOOT + pkg, bootId(shell))
+            val boot = bootId(shell)
+            store.putString(KEY_BOOT + pkg, boot)
+            GameStateRef.saveState(store, pkg, after, boot)
             val what = listOfNotNull(applied?.let { ResolutionLevel.forScale(it)?.label ?: it }, cap?.let { "${it.label} FPS cap" })
             return GameResolutionResult(true, "${what.joinToString(" and ")} set again after the phone restarted")
         }
