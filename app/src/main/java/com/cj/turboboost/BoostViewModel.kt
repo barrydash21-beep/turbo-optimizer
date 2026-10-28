@@ -741,7 +741,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
 
                     // (c) Whatever happened above, if tweaks are on something must undo them.
                     if (PerformanceTuner.isActive(tunerStore) || BackgroundRestrictor.isActive(restrictionStore) ||
-                        ProfileGameMode.held(resolutionStore)
+                        ProfileGameMode.held(resolutionStore) || SystemSnapshot.exists(snapshot)
                     ) {
                         try {
                             GameMonitorService.start(app, gamePackage, rate, active.name, startCheck)
@@ -1200,8 +1200,9 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             repeat(STALE_REVERT_ATTEMPTS) {
                 val (tweaks, restrictions) = withContext(Dispatchers.IO) {
-                    // A game mode a profile switched counts as held tweaks: the end puts it back too.
-                    (PerformanceTuner.isActive(tunerStore) || ProfileGameMode.held(resolutionStore)) to
+                    // A game mode a profile switched, or the user's own settings still changed,
+                    // count as held tweaks: the end puts them back too.
+                    (PerformanceTuner.isActive(tunerStore) || ProfileGameMode.held(resolutionStore) || SystemSnapshot.exists(snapshot)) to
                         BackgroundRestrictor.isActive(restrictionStore)
                 }
                 val open = SessionEnd.state(sessionStore).let { it == SessionEnd.STATE_ACTIVE || it == SessionEnd.STATE_ENDING }

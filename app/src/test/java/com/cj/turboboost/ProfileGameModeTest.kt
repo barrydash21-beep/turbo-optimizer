@@ -113,7 +113,7 @@ class ProfileGameModeTest {
             RamCleaner.shell = shell
             val resolution = FakeStore()
             ProfileGameMode.apply(shell, resolution, pkg, "standard")
-            val ctx = SessionContext(shell, FakeStore(), FakeStore(), FakeStore(), SessionStore(FakeStore()), resolution, { 0L }, { 0L })
+            val ctx = SessionContext(shell, FakeStore(), FakeStore(), FakeStore(), SessionStore(FakeStore()), resolution, FakeStore(), { 0L }, { 0L })
 
             val outcome = SessionEnd.finish(ctx, EndReason.MANUAL)
 

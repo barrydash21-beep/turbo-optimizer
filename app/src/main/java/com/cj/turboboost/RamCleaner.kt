@@ -365,6 +365,73 @@ object RamCleaner {
         return result
     }
 
+    /** The values a boost writes, per setting: what a setting still holds if nobody changed it since. */
+    private const val BOOST_ZEN = "1"
+    private const val BOOST_POINTER = "7"
+
+    /**
+     * Puts the user's own settings back at the end of a session or at the next app start, if a
+     * snapshot is held, and does nothing if none is. Unlike [restoreSystemState] (RESTORE, an
+     * explicit request), each setting is only written while it still holds the value a boost
+     * sets: one already back is left, and one changed since (the user turned DND on mid-game,
+     * say) is not overwritten. Every write is read back. The snapshot is cleared only when
+     * every setting is back or left, so a failed restore retries against the original values.
+     *
+     * Null when no snapshot was held.
+     */
+    fun restoreHeldSnapshot(store: KeyValueStore): StepReport? {
+        if (!SystemSnapshot.exists(store)) return null
+        if (!shell.isAvailable()) return StepReport(unavailable = true)
+        beginSequence()
+        val report = ReportBuilder()
+
+        val zen = SystemSnapshot.zenMode(store)
+        report.record("Do Not Disturb", restoreSetting("global", "zen_mode", zen, BOOST_ZEN) {
+            runShizukuCommand("cmd notification set_dnd ${SystemSnapshot.dndArgumentFor(zen)}")
+        })
+        report.record(
+            "Pointer speed",
+            restoreSetting("system", "pointer_speed", SystemSnapshot.pointerSpeed(store), BOOST_POINTER)
+        )
+        report.record("Animations", ANIMATION_SCALES_BOOST.all { (key, boosted) ->
+            restoreSetting("global", key, SystemSnapshot.animationScale(store, key), boosted)
+        })
+        // A boost only ever turns auto-sync off.
+        val syncSaved = SystemSnapshot.masterSync(store)
+        val syncNow = syncSettings.isMasterSyncEnabled()
+        val syncOk = when {
+            syncNow == syncSaved || syncNow -> true
+            else -> syncSettings.setMasterSyncEnabled(syncSaved) && syncSettings.isMasterSyncEnabled() == syncSaved
+        }
+        report.record("Auto-sync", syncOk)
+
+        val result = report.build(sequenceHitMissingApi())
+        if (result.allOk) SystemSnapshot.clear(store)
+        return result
+    }
+
+    /**
+     * One setting back to [saved]: true when it already holds it, when it holds neither it nor
+     * [boosted] (changed since, left as it is), or when the write reads back. [after] runs once
+     * after a write.
+     */
+    private fun restoreSetting(namespace: String, key: String, saved: String, boosted: String, after: () -> Unit = {}): Boolean {
+        // Null is a read that failed: try again later. An unset key reads "null", which is not a boost's value.
+        val now = shell.capture("settings get $namespace $key")?.trim() ?: return false
+        if (sameSetting(now, saved) || !sameSetting(now, boosted)) return true
+        if (!runShizukuCommand("settings put $namespace $key $saved").ok) return false
+        after()
+        val back = shell.capture("settings get $namespace $key")?.trim()
+        return back != null && sameSetting(back, saved)
+    }
+
+    /** `0` and `0.0` are the same scale. */
+    private fun sameSetting(a: String, b: String): Boolean {
+        val x = a.toFloatOrNull()
+        val y = b.toFloatOrNull()
+        return if (x != null && y != null) x == y else a == b
+    }
+
     /**
      * Runs one boost according to [profile] for [gamePackage]. Single reader of the profile
      * matrix. The refresh rate is not part of it: [PerformanceTuner] applies the per-game rate.

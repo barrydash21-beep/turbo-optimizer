@@ -99,6 +99,7 @@ class SessionEndTest {
         restrictions = FakeStore(),
         sessions = sessions,
         gameResolution = FakeStore(),
+        snapshot = FakeStore(),
         elapsedNow = { 200_000L },
         wallNow = { 1_000_000L }
     )
