@@ -195,65 +195,190 @@ fun BoosterScreen(
         }
     }
 
-    // Each section is built once and placed by the layout below, wide or narrow.
+    // The open page survives rotation and the process being killed.
+    var pageName by rememberSaveable { mutableStateOf(Page.BOOST.name) }
+    val page = Page.entries.firstOrNull { it.name == pageName } ?: Page.BOOST
+    val shizukuReady = shizuku == ShizukuState.READY
+    val selectedPackage = selected?.profile?.packageName
+
+    // One read when Shizuku becomes ready, then only when the user asks.
+    LaunchedEffect(shizuku) { if (shizukuReady) onRefreshHeavyApps() }
+
+    // Each section is built once and placed on its page below, wide or narrow.
+
+    // BOOST
+    val statTiles: @Composable () -> Unit = {
+        TelemetryDashboard(
+            ram = deviceStats?.ram,
+            batteryTempC = deviceStats?.batteryTempC,
+            lastSession = lastSession
+        )
+    }
     val gamesSection: @Composable () -> Unit = {
         GameSelector(
             games = games,
             selectedGame = selectedGame,
-            rates = rates,
             enabled = !busy,
             onSelectGame = onSelectGame,
-            onRateChange = onRateChange,
             onAddGame = onOpenPicker,
-            onRemoveGame = onRemoveGame,
-            resolution = if (resolutionSupported) gameResolution else null,
-            shizukuReady = shizuku == ShizukuState.READY,
-            onPickResolution = onPickResolution,
-            onPickFpsCap = onPickFpsCap,
-            onRestoreResolutionAnyway = onRestoreResolutionAnyway,
-            onRestartGame = { restartTarget = it }
+            onRemoveGame = onRemoveGame
         )
     }
-    val optionsSection: @Composable () -> Unit = {
-        OptionsModule(
-            profile = profile,
-            vpnEnabled = vpnEnabled,
-            restrictEnabled = restrictEnabled,
-            overlayEnabled = overlayEnabled,
-            overlayPermitted = overlayPermitted,
-            driverOptIn = driverOptIn,
-            driverSupported = driverSupported,
-            enabled = !busy,
-            onProfileChange = onProfileChange,
-            onVpnEnabledChange = onVpnEnabledChange,
-            onRestrictEnabledChange = onRestrictEnabledChange,
-            onEditRestricted = onOpenRestrictEditor,
-            onOverlayEnabledChange = onOverlayEnabledChange,
-            onGrantOverlay = onGrantOverlay,
-            onDriverOptInChange = onDriverOptInChange
-        )
-    }
-    val statusCards: @Composable () -> Unit = {
-        Row(
-            modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Max),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+    // Always reachable: the system changes a boost makes (DND, animation scales,
+    // refresh rate) outlive the VPN, so the exit must not be gated on it.
+    val restore: @Composable () -> Unit = { RestoreButton(enabled = !busy, onClick = onRestore) }
+    val statusSection: @Composable () -> Unit = {
+        CollapsibleCard(
+            title = "STATUS",
+            state = when (shizuku) {
+                ShizukuState.READY -> "LINKED"
+                ShizukuState.NEEDS_PERMISSION -> "LOCKED"
+                ShizukuState.OFFLINE -> "OFFLINE"
+            }
         ) {
-            InteractiveStatusCard(
-                label = "SHIZUKU",
-                state = shizuku,
-                modifier = Modifier.weight(1f).fillMaxHeight()
-            )
-            InteractiveStatusCard(
-                label = "STABILIZER",
-                vpn = vpnState,
-                modifier = Modifier.weight(1f).fillMaxHeight(),
-                onStop = onStopVpn,
-                showStop = !busy
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Max),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    InteractiveStatusCard(
+                        label = "SHIZUKU",
+                        state = shizuku,
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
+                    InteractiveStatusCard(
+                        label = "STABILIZER",
+                        vpn = vpnState,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        onStop = onStopVpn,
+                        showStop = !busy
+                    )
+                }
+                ConnectionCards(
+                    reachabilityMs = reachability,
+                    hz = deviceStats?.hz?.let { RefreshRate.display(it) }
+                )
+            }
+        }
+    }
+
+    // APPS
+    val heavySection: @Composable () -> Unit = {
+        HeavyAppsCard(
+            ui = heavyApps,
+            ram = deviceStats?.ram,
+            shizukuReady = shizukuReady,
+            enabled = !busy,
+            onRefresh = onRefreshHeavyApps,
+            onStop = onStopHeavyApp,
+            onRestrict = onRestrictHeavyApp,
+            onClearRam = onClearRam
+        )
+    }
+    val restrictListSection: @Composable () -> Unit = {
+        RestrictListEntry(
+            count = restrictShown.size,
+            restrictEnabled = restrictEnabled,
+            enabled = !busy,
+            onEdit = onOpenRestrictEditor
+        )
+    }
+
+    // TUNE
+    val profileSection: @Composable () -> Unit = {
+        ProfileCard(profile = profile, enabled = !busy, onProfileChange = onProfileChange)
+    }
+    val rateSection: @Composable () -> Unit = {
+        SectionCard(Modifier.alpha(if (busy) 0.5f else 1f)) {
+            SectionLabel("REFRESH RATE")
+            Spacer(Modifier.height(12.dp))
+            if (selected == null || selectedPackage == null) {
+                Text("Pick a game on the BOOST page to set its refresh rate.", color = Tac.TextLo, fontSize = 12.sp, lineHeight = 17.sp)
+            } else {
+                GameRateRows(
+                    game = selected,
+                    rate = rates[selectedPackage],
+                    enabled = !busy,
+                    onRateChange = { onRateChange(selectedPackage, it) }
+                )
+            }
+        }
+    }
+    val resolutionSection: @Composable () -> Unit = {
+        if (resolutionSupported) {
+            CollapsibleCard(title = "RESOLUTION AND FPS CAP", enabled = !busy) {
+                if (selected == null || selectedPackage == null) {
+                    Text("Pick a game on the BOOST page first.", color = Tac.TextLo, fontSize = 12.sp, lineHeight = 17.sp)
+                } else {
+                    val resolution = gameResolution[selectedPackage]
+                    GameResolutionRow(
+                        gameLabel = selected.label,
+                        ui = resolution,
+                        shizukuReady = shizukuReady,
+                        enabled = !busy,
+                        onPick = { onPickResolution(selectedPackage, it) },
+                        onRestoreAnyway = { onRestoreResolutionAnyway(selectedPackage) },
+                        onRestart = { restartTarget = selectedPackage }
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    FpsCapRow(
+                        gameLabel = selected.label,
+                        ui = resolution,
+                        shizukuReady = shizukuReady,
+                        enabled = !busy,
+                        onPick = { onPickFpsCap(selectedPackage, it) }
+                    )
+                }
+            }
+        }
+    }
+    val stabilizerSection: @Composable () -> Unit = {
+        CollapsibleCard(title = "PING STABILIZER", state = if (vpnEnabled) "ON" else "OFF", enabled = !busy) {
+            StabilizerOption(vpnEnabled = vpnEnabled, enabled = !busy, onVpnEnabledChange = onVpnEnabledChange)
+        }
+    }
+    val restrictSection: @Composable () -> Unit = {
+        CollapsibleCard(title = "RESTRICT BACKGROUND APPS", state = if (restrictEnabled) "ON" else "OFF", enabled = !busy) {
+            RestrictOption(restrictEnabled = restrictEnabled, enabled = !busy, onRestrictEnabledChange = onRestrictEnabledChange)
+        }
+    }
+    val overlaySection: @Composable () -> Unit = {
+        CollapsibleCard(title = "OVERLAY", state = if (overlayEnabled) "ON" else "OFF") {
+            OverlayOption(
+                overlayEnabled = overlayEnabled,
+                overlayPermitted = overlayPermitted,
+                onOverlayEnabledChange = onOverlayEnabledChange,
+                onGrantOverlay = onGrantOverlay
             )
         }
     }
-    val diagnosticsSection: @Composable () -> Unit = {
-        DiagnosticsSection(ui = diagnostics, onRun = onRunDiagnostics, report = diagnosticsReport)
+    val driverSection: @Composable () -> Unit = {
+        CollapsibleCard(title = "GRAPHICS DRIVER LIST", state = if (driverOptIn && driverSupported) "ON" else "OFF", enabled = !busy) {
+            DriverOption(
+                driverOptIn = driverOptIn,
+                driverSupported = driverSupported,
+                enabled = !busy,
+                onDriverOptInChange = onDriverOptInChange
+            )
+        }
+    }
+
+    // REPORTS
+    val lastSessionSection: @Composable () -> Unit = {
+        CollapsibleCard(title = "LAST SESSION") {
+            if (lastSession == null) {
+                Text("No saved session yet.", color = Tac.TextLo, fontSize = 12.sp)
+            } else {
+                Text(
+                    GameRegistry.labelFor(context, lastSession.packageName) ?: lastSession.packageName,
+                    color = Tac.TextHi,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(8.dp))
+                SessionRows(lastSession)
+            }
+        }
     }
     val comparisonSection: @Composable () -> Unit = {
         SessionComparisonSection(
@@ -263,105 +388,74 @@ fun BoosterScreen(
             onOpen = onLoadComparison
         )
     }
-    // One read when Shizuku becomes ready, then only when the user asks.
-    LaunchedEffect(shizuku) { if (shizuku == ShizukuState.READY) onRefreshHeavyApps() }
-    val heavySection: @Composable () -> Unit = {
-        HeavyAppsCard(
-            ui = heavyApps,
-            ram = deviceStats?.ram,
-            shizukuReady = shizuku == ShizukuState.READY,
-            enabled = !busy,
-            onRefresh = onRefreshHeavyApps,
-            onStop = onStopHeavyApp,
-            onRestrict = onRestrictHeavyApp,
-            onClearRam = onClearRam
-        )
+    val diagnosticsSection: @Composable () -> Unit = {
+        DiagnosticsSection(ui = diagnostics, onRun = onRunDiagnostics, report = diagnosticsReport)
     }
-    val statTiles: @Composable () -> Unit = {
-        TelemetryDashboard(
-            ram = deviceStats?.ram,
-            reachabilityMs = reachability,
-            hz = deviceStats?.hz?.let { RefreshRate.display(it) },
-            batteryTempC = deviceStats?.batteryTempC,
-            lastSession = lastSession
-        )
-    }
-    // Always reachable: the system changes a boost makes (DND, animation scales,
-    // refresh rate) outlive the VPN, so the exit must not be gated on it.
-    val restore: @Composable () -> Unit = { RestoreButton(enabled = !busy, onClick = onRestore) }
 
     Box(Modifier.fillMaxSize().background(Tac.BgBrush)) {
         BoxWithConstraints(Modifier.fillMaxSize().systemBarsPadding()) {
             val wide = maxWidth >= 600.dp && maxWidth > maxHeight
-            if (wide) {
-                var tabName by rememberSaveable { mutableStateOf(RailTab.OVERVIEW.name) }
-                val tab = RailTab.entries.firstOrNull { it.name == tabName } ?: RailTab.OVERVIEW
-                Row(Modifier.fillMaxSize()) {
-                    IconRail(selected = tab, onSelect = { tabName = it.name })
-                    // Left: pick, boost, undo. Right: the section the rail selects.
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Header()
-                        Spacer(Modifier.height(12.dp))
-                        BoostButton(step = step, accent = accent, gameName = selected?.profile?.displayName, onClick = onBoost, diameter = 210.dp)
-                        Spacer(Modifier.height(8.dp))
-                        StepTracker(current = step, includeStabilizing = vpnEnabled)
-                        Spacer(Modifier.height(12.dp))
-                        gamesSection()
-                        Spacer(Modifier.height(10.dp))
-                        MeasureButton(enabled = !busy && selected != null, onClick = onMeasure)
-                        Spacer(Modifier.height(4.dp))
-                        restore()
-                    }
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .verticalScroll(rememberScrollState())
-                            .padding(start = 4.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        when (tab) {
-                            RailTab.OVERVIEW -> {
-                                statTiles()
-                                statusCards()
-                                heavySection()
-                            }
-                            RailTab.OPTIONS -> optionsSection()
-                            RailTab.REPORTS -> {
-                                diagnosticsSection()
-                                comparisonSection()
-                            }
+            val pageContent: @Composable () -> Unit = {
+                when (page) {
+                    Page.BOOST -> PageColumns(
+                        wide = wide,
+                        left = {
+                            Header()
+                            statTiles()
+                            gamesSection()
+                        },
+                        right = {
+                            BoostButton(
+                                step = step,
+                                accent = accent,
+                                gameName = selected?.profile?.displayName,
+                                onClick = onBoost,
+                                diameter = if (wide) 210.dp else 220.dp
+                            )
+                            MeasureButton(enabled = !busy && selected != null, onClick = onMeasure)
+                            StepTracker(current = step, includeStabilizing = vpnEnabled)
+                            restore()
+                            statusSection()
                         }
-                    }
+                    )
+                    Page.APPS -> PageColumns(
+                        wide = wide,
+                        left = { heavySection() },
+                        right = { restrictListSection() }
+                    )
+                    Page.TUNE -> PageColumns(
+                        wide = wide,
+                        left = {
+                            profileSection()
+                            rateSection()
+                        },
+                        right = {
+                            resolutionSection()
+                            stabilizerSection()
+                            restrictSection()
+                            overlaySection()
+                            driverSection()
+                        }
+                    )
+                    Page.REPORTS -> PageColumns(
+                        wide = wide,
+                        left = {
+                            lastSessionSection()
+                            comparisonSection()
+                        },
+                        right = { diagnosticsSection() }
+                    )
+                }
+            }
+            if (wide) {
+                Row(Modifier.fillMaxSize()) {
+                    IconRail(selected = page, onSelect = { pageName = it.name })
+                    Box(Modifier.weight(1f).fillMaxHeight()) { pageContent() }
                 }
             } else {
-                Column(
-                    Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Header()
-                    statTiles()
-                    gamesSection()
-                    BoostButton(step = step, accent = accent, gameName = selected?.profile?.displayName, onClick = onBoost)
-                    MeasureButton(enabled = !busy && selected != null, onClick = onMeasure)
-                    StepTracker(current = step, includeStabilizing = vpnEnabled)
-                    optionsSection()
-                    statusCards()
-                    heavySection()
-                    restore()
-                    diagnosticsSection()
-                    comparisonSection()
+                Column(Modifier.fillMaxSize()) {
+                    Box(Modifier.weight(1f).fillMaxWidth()) { pageContent() }
+                    PageBar(selected = page, onSelect = { pageName = it.name })
                 }
             }
         }
@@ -795,22 +889,10 @@ private fun DisplayOverrideDialog(state: DisplayState, onReset: () -> Unit, onKe
 // ---------------------------------------------------------------------------
 
 @Composable
-private fun OptionsModule(
+private fun ProfileCard(
     profile: BoostProfile,
-    vpnEnabled: Boolean,
-    restrictEnabled: Boolean,
-    overlayEnabled: Boolean,
-    overlayPermitted: Boolean,
-    driverOptIn: Boolean,
-    driverSupported: Boolean,
     enabled: Boolean,
-    onProfileChange: (BoostProfile) -> Unit,
-    onVpnEnabledChange: (Boolean) -> Unit,
-    onRestrictEnabledChange: (Boolean) -> Unit,
-    onEditRestricted: () -> Unit,
-    onOverlayEnabledChange: (Boolean) -> Unit,
-    onGrantOverlay: () -> Unit,
-    onDriverOptInChange: (Boolean) -> Unit
+    onProfileChange: (BoostProfile) -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.5f),
@@ -858,174 +940,165 @@ private fun OptionsModule(
                 fontSize = 11.sp,
                 lineHeight = 16.sp
             )
+        }
+    }
+}
 
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider(color = Tac.Line, thickness = 1.dp)
-            Spacer(Modifier.height(12.dp))
+@Composable
+private fun StabilizerOption(vpnEnabled: Boolean, enabled: Boolean, onVpnEnabledChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                // L12: the DNS redirect is a side effect worth stating, since it
+                // applies to every app that is not exempted from the tunnel.
+                if (vpnEnabled) {
+                    "Blocks background traffic. Routes DNS through Cloudflare while active."
+                } else {
+                    "Left untouched"
+                },
+                color = Tac.TextLo,
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+        }
+        Switch(
+            modifier = Modifier.semantics { contentDescription = "Ping stabilizer" },
+            checked = vpnEnabled,
+            onCheckedChange = onVpnEnabledChange,
+            enabled = enabled,
+            colors = optionSwitchColors()
+        )
+    }
+}
 
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "PING STABILIZER",
-                        color = Tac.TextHi,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = UiFont
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        // L12: the DNS redirect is a side effect worth stating, since it
-                        // applies to every app that is not exempted from the tunnel.
-                        if (vpnEnabled) {
-                            "Blocks background traffic. Routes DNS through Cloudflare while active."
-                        } else {
-                            "Left untouched"
-                        },
-                        color = Tac.TextLo,
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp
-                    )
-                }
-                Switch(
-                    modifier = Modifier.semantics { contentDescription = "Ping stabilizer" },
-                    checked = vpnEnabled,
-                    onCheckedChange = onVpnEnabledChange,
-                    enabled = enabled,
-                    colors = optionSwitchColors()
+@Composable
+private fun RestrictOption(restrictEnabled: Boolean, enabled: Boolean, onRestrictEnabledChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (restrictEnabled) {
+                    "During the session, the apps on your list can't run in the background. " +
+                        "Put back as they were when the game closes. Edit the list on the APPS page."
+                } else {
+                    "Left untouched"
+                },
+                color = Tac.TextLo,
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+        }
+        Switch(
+            modifier = Modifier.semantics { contentDescription = "Restrict background apps during session" },
+            checked = restrictEnabled,
+            onCheckedChange = onRestrictEnabledChange,
+            enabled = enabled,
+            colors = optionSwitchColors()
+        )
+    }
+}
+
+@Composable
+private fun OverlayOption(
+    overlayEnabled: Boolean,
+    overlayPermitted: Boolean,
+    onOverlayEnabledChange: (Boolean) -> Unit,
+    onGrantOverlay: () -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (overlayEnabled) {
+                    "Shows FPS, CPU and RAM over the game while a session runs. Read-only: drag it to move it."
+                } else {
+                    "Left off"
+                },
+                color = Tac.TextLo,
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+            if (overlayEnabled && !overlayPermitted) {
+                Text(
+                    "Needs \"Display over other apps\" before it can show.",
+                    color = Tac.Warn,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
                 )
-            }
-
-            Spacer(Modifier.height(12.dp))
-            HorizontalDivider(color = Tac.Line, thickness = 1.dp)
-            Spacer(Modifier.height(12.dp))
-
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "RESTRICT BACKGROUND APPS",
-                        color = Tac.TextHi,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = UiFont
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        if (restrictEnabled) {
-                            "During the session, the apps on your list can't run in the background. " +
-                                "Put back as they were when the game closes."
-                        } else {
-                            "Left untouched"
-                        },
-                        color = Tac.TextLo,
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp
-                    )
-                    TextButton(
-                        onClick = onEditRestricted,
-                        enabled = enabled,
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        Text("EDIT LIST", color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
-                    }
+                TextButton(onClick = onGrantOverlay, contentPadding = PaddingValues(0.dp)) {
+                    Text("OPEN SETTINGS", color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
                 }
-                Switch(
-                    modifier = Modifier.semantics { contentDescription = "Restrict background apps during session" },
-                    checked = restrictEnabled,
-                    onCheckedChange = onRestrictEnabledChange,
-                    enabled = enabled,
-                    colors = optionSwitchColors()
-                )
             }
+        }
+        Switch(
+            modifier = Modifier.semantics { contentDescription = "Show the FPS, CPU and RAM overlay during a session" },
+            checked = overlayEnabled,
+            onCheckedChange = onOverlayEnabledChange,
+            colors = optionSwitchColors()
+        )
+    }
+}
 
-            Spacer(Modifier.height(12.dp))
-            HorizontalDivider(color = Tac.Line, thickness = 1.dp)
-            Spacer(Modifier.height(12.dp))
+@Composable
+private fun DriverOption(
+    driverOptIn: Boolean,
+    driverSupported: Boolean,
+    enabled: Boolean,
+    onDriverOptInChange: (Boolean) -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                when {
+                    !driverSupported -> "Needs Android 10 or later"
+                    driverOptIn -> "Adds the game to the system's graphics driver opt-in list for the session and puts the list back after. Applies after the game restarts. Effect unverified."
+                    else -> "Left untouched"
+                },
+                color = Tac.TextLo,
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+        }
+        Switch(
+            modifier = Modifier.semantics { contentDescription = "Add the game to the graphics driver opt-in list during a session" },
+            checked = driverOptIn && driverSupported,
+            onCheckedChange = onDriverOptInChange,
+            enabled = enabled && driverSupported,
+            colors = optionSwitchColors()
+        )
+    }
+}
 
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "OVERLAY",
-                        color = Tac.TextHi,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = UiFont
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        if (overlayEnabled) {
-                            "Shows FPS, CPU and RAM over the game while a session runs. Read-only: drag it to move it."
-                        } else {
-                            "Left off"
-                        },
-                        color = Tac.TextLo,
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp
-                    )
-                    if (overlayEnabled && !overlayPermitted) {
-                        Text(
-                            "Needs \"Display over other apps\" before it can show.",
-                            color = Tac.Warn,
-                            fontSize = 11.sp,
-                            lineHeight = 16.sp
-                        )
-                        TextButton(onClick = onGrantOverlay, contentPadding = PaddingValues(0.dp)) {
-                            Text("OPEN SETTINGS", color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
-                        }
-                    }
-                }
-                Switch(
-                    modifier = Modifier.semantics { contentDescription = "Show the FPS, CPU and RAM overlay during a session" },
-                    checked = overlayEnabled,
-                    onCheckedChange = onOverlayEnabledChange,
-                    colors = optionSwitchColors()
-                )
-            }
-
-            Spacer(Modifier.height(12.dp))
-            HorizontalDivider(color = Tac.Line, thickness = 1.dp)
-            Spacer(Modifier.height(12.dp))
-
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "GRAPHICS DRIVER LIST",
-                        color = Tac.TextHi,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = UiFont
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        when {
-                            !driverSupported -> "Needs Android 10 or later"
-                            driverOptIn -> "Adds the game to the system's graphics driver opt-in list for the session and puts the list back after. Applies after the game restarts. Effect unverified."
-                            else -> "Left untouched"
-                        },
-                        color = Tac.TextLo,
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp
-                    )
-                }
-                Switch(
-                    modifier = Modifier.semantics { contentDescription = "Add the game to the graphics driver opt-in list during a session" },
-                    checked = driverOptIn && driverSupported,
-                    onCheckedChange = onDriverOptInChange,
-                    enabled = enabled && driverSupported,
-                    colors = optionSwitchColors()
-                )
-            }
+/** The way into the restriction list's editor, on the APPS page beside the apps it is for. */
+@Composable
+private fun RestrictListEntry(count: Int, restrictEnabled: Boolean, enabled: Boolean, onEdit: () -> Unit) {
+    SectionCard(Modifier.alpha(if (enabled) 1f else 0.5f)) {
+        SectionLabel("BACKGROUND RESTRICTION LIST")
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "$count ${if (count == 1) "app" else "apps"} on the list. A boost restricts them while the session runs " +
+                "and the session end puts them back." +
+                if (restrictEnabled) "" else " Restriction is off on the TUNE page.",
+            color = Tac.TextLo,
+            fontSize = 11.sp,
+            lineHeight = 16.sp
+        )
+        TextButton(
+            onClick = onEdit,
+            enabled = enabled,
+            contentPadding = PaddingValues(0.dp)
+        ) {
+            Text("EDIT LIST", color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
         }
     }
 }
@@ -1211,19 +1284,10 @@ private fun RowScope.ProfileChip(
 private fun GameSelector(
     games: List<InstalledGame>?,
     selectedGame: String?,
-    rates: Map<String, Float>,
     enabled: Boolean,
     onSelectGame: (String) -> Unit,
-    onRateChange: (String, Float) -> Unit,
     onAddGame: () -> Unit,
-    onRemoveGame: (String) -> Unit,
-    /** Per-game render resolution; null hides it (Android 13 and older). */
-    resolution: Map<String, GameResolutionUi>?,
-    shizukuReady: Boolean,
-    onPickResolution: (String, ResolutionLevel?) -> Unit,
-    onPickFpsCap: (String, FpsCap?) -> Unit,
-    onRestoreResolutionAnyway: (String) -> Unit,
-    onRestartGame: (String) -> Unit
+    onRemoveGame: (String) -> Unit
 ) {
     Column(Modifier.fillMaxWidth()) {
         Text(
@@ -1256,18 +1320,9 @@ private fun GameSelector(
                     GameCard(
                         game = game,
                         selected = pkg == selectedGame,
-                        rate = rates[pkg],
                         enabled = enabled,
                         onSelect = { onSelectGame(pkg) },
-                        onRateChange = { onRateChange(pkg, it) },
-                        onRemove = { onRemoveGame(pkg) },
-                        showResolution = resolution != null,
-                        resolution = resolution?.get(pkg),
-                        shizukuReady = shizukuReady,
-                        onPickResolution = { onPickResolution(pkg, it) },
-                        onPickFpsCap = { onPickFpsCap(pkg, it) },
-                        onRestoreResolutionAnyway = { onRestoreResolutionAnyway(pkg) },
-                        onRestart = { onRestartGame(pkg) }
+                        onRemove = { onRemoveGame(pkg) }
                     )
                 }
             }
@@ -1334,18 +1389,9 @@ private fun AppPickerDialog(apps: List<LaunchableApp>?, onPick: (String) -> Unit
 private fun GameCard(
     game: InstalledGame,
     selected: Boolean,
-    rate: Float?,
     enabled: Boolean,
     onSelect: () -> Unit,
-    onRateChange: (Float) -> Unit,
-    onRemove: () -> Unit,
-    showResolution: Boolean,
-    resolution: GameResolutionUi?,
-    shizukuReady: Boolean,
-    onPickResolution: (ResolutionLevel?) -> Unit,
-    onPickFpsCap: (FpsCap?) -> Unit,
-    onRestoreResolutionAnyway: () -> Unit,
-    onRestart: () -> Unit
+    onRemove: () -> Unit
 ) {
     val border by animateColorAsState(if (selected) Tac.Cyan else Tac.Line, label = "gameBorder")
     val bg by animateColorAsState(
@@ -1389,54 +1435,34 @@ private fun GameCard(
                     Text("REMOVE", color = Tac.TextLo, fontSize = 9.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
                 }
             }
-
-            Spacer(Modifier.height(12.dp))
-            SegmentedBar {
-                game.supportedRates.forEach { option ->
-                    RateChip(
-                        rate = option,
-                        selected = option == rate,
-                        enabled = enabled,
-                        onClick = { onRateChange(option) }
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-            // The app pins the display's refresh rate; the game decides its own frame rate.
-            Text(
-                "Also set ${rate?.let { "${RefreshRate.display(it)} FPS" } ?: "the matching frame rate"} " +
-                    "in ${game.label}'s own graphics settings. This app sets the display " +
-                    "refresh rate only; it can't force the game's frame rate.",
-                color = Tac.TextLo,
-                fontSize = 11.sp,
-                lineHeight = 16.sp
-            )
-
-            if (showResolution) {
-                Spacer(Modifier.height(12.dp))
-                HorizontalDivider(color = Tac.Line, thickness = 1.dp)
-                Spacer(Modifier.height(12.dp))
-                GameResolutionRow(
-                    gameLabel = game.label,
-                    ui = resolution,
-                    shizukuReady = shizukuReady,
-                    enabled = enabled,
-                    onPick = onPickResolution,
-                    onRestoreAnyway = onRestoreResolutionAnyway,
-                    onRestart = onRestart
-                )
-                Spacer(Modifier.height(12.dp))
-                FpsCapRow(
-                    gameLabel = game.label,
-                    ui = resolution,
-                    shizukuReady = shizukuReady,
-                    enabled = enabled,
-                    onPick = onPickFpsCap
-                )
-            }
         }
     }
+}
+
+/** The selected game's refresh rate choices, on the TUNE page. */
+@Composable
+private fun GameRateRows(game: InstalledGame, rate: Float?, enabled: Boolean, onRateChange: (Float) -> Unit) {
+    SegmentedBar {
+        game.supportedRates.forEach { option ->
+            RateChip(
+                rate = option,
+                selected = option == rate,
+                enabled = enabled,
+                onClick = { onRateChange(option) }
+            )
+        }
+    }
+
+    Spacer(Modifier.height(8.dp))
+    // The app pins the display's refresh rate; the game decides its own frame rate.
+    Text(
+        "Also set ${rate?.let { "${RefreshRate.display(it)} FPS" } ?: "the matching frame rate"} " +
+            "in ${game.label}'s own graphics settings. This app sets the display " +
+            "refresh rate only; it can't force the game's frame rate.",
+        color = Tac.TextLo,
+        fontSize = 11.sp,
+        lineHeight = 16.sp
+    )
 }
 
 @Composable
@@ -1503,6 +1529,64 @@ private fun endReasonText(code: String?): String = when (EndReason.fromCode(code
     null -> "not recorded"
 }
 
+/** The rows of a session record: in the summary after a game exits, and under LAST SESSION on REPORTS. */
+@Composable
+private fun SessionRows(record: SessionRecord) {
+    val rateHz = RefreshRate.display(record.refreshRate)
+    val timeToThermal = when {
+        record.msToThermal1 != null -> "${durationText(record.msToThermal1)} (30 s sampling)"
+        record.maxThermal != null -> "never reached"
+        else -> "unavailable"
+    }
+    SummaryRow("Session", profileText(record.profile))
+    SummaryRow(if (record.isBaseline) "Refresh rate held" else "Refresh rate chosen", "$rateHz Hz")
+    SummaryRow(
+        "Peak rate the system held",
+        record.observedPeak?.let { peak ->
+            val held = RefreshRate.display(peak)
+            if (held == rateHz) "$held Hz" else "$held Hz (HiOS overrode $rateHz)"
+        } ?: "unavailable"
+    )
+    SummaryRow("Render resolution", renderResolutionText(record.renderResolution))
+    AliveRow("Restricted apps alive at ${BackgroundRestrictor.ALIVE_CHECK_DELAY_MS / 1000} s", record.restrictedAliveEarly)
+    AliveRow("Restricted apps alive at end", record.restrictedAliveAtEnd)
+    // Every session saved since these existed has a profile; one without predates them.
+    val recorded = record.profile != null
+    SummaryRow("Game mode at start", if (recorded) GameStateRef.display(record.gameStateStart) else "not recorded")
+    SummaryRow("Game mode at end", if (recorded) GameStateRef.display(record.gameStateEnd) else "not recorded")
+    SummaryRow("Changed by another app", contaminationText(record.contamination))
+    SummaryRow("Duration", durationText(record.durationMs))
+    SummaryRow("Ended", endReasonText(record.endReason))
+    SummaryRow(
+        "Sampled",
+        when {
+            !recorded -> "not recorded"
+            record.continuity == null -> "too short to say"
+            else -> "${(record.continuity * 100).roundToInt()}% of the session"
+        }
+    )
+    SummaryRow("Average FPS", fpsText(record.avgFps))
+    SummaryRow("1% low FPS", fpsText(record.onePercentLowFps))
+    SummaryRow(
+        "Pauses of 1 s or more",
+        record.pauseCount?.let { n -> if (n == 0) "none" else "$n, ${durationText(record.pauseMs ?: 0L)} in all (not in FPS)" } ?: "not recorded"
+    )
+    SummaryRow(
+        "Battery temperature",
+        if (record.batteryTempStart == null && record.batteryTempEnd == null) {
+            "unavailable"
+        } else {
+            "${record.batteryTempStart?.let { tempText(it) } ?: "?"} to ${record.batteryTempEnd?.let { tempText(it) } ?: "?"}"
+        }
+    )
+    SummaryRow("Time to thermal status 1+", timeToThermal)
+    SummaryRow("Max thermal status", thermalText(record.maxThermal))
+    SummaryRow(
+        "Samples",
+        "${record.samples} (FPS in ${record.fpsSamples}, thermal in ${record.thermalSamples})"
+    )
+}
+
 @Composable
 private fun SessionSummary(
     record: SessionRecord,
@@ -1512,11 +1596,6 @@ private fun SessionSummary(
 ) {
     val name = GameRegistry.labelFor(LocalContext.current, record.packageName) ?: record.packageName
     val rateHz = RefreshRate.display(record.refreshRate)
-    val timeToThermal = when {
-        record.msToThermal1 != null -> "${durationText(record.msToThermal1)} (30 s sampling)"
-        record.maxThermal != null -> "never reached"
-        else -> "unavailable"
-    }
 
     Box(
         Modifier
@@ -1541,53 +1620,7 @@ private fun SessionSummary(
                 Text(name, color = Tac.TextHi, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(16.dp))
 
-                SummaryRow("Session", profileText(record.profile))
-                SummaryRow(if (record.isBaseline) "Refresh rate held" else "Refresh rate chosen", "$rateHz Hz")
-                SummaryRow(
-                    "Peak rate the system held",
-                    record.observedPeak?.let { peak ->
-                        val held = RefreshRate.display(peak)
-                        if (held == rateHz) "$held Hz" else "$held Hz (HiOS overrode $rateHz)"
-                    } ?: "unavailable"
-                )
-                SummaryRow("Render resolution", renderResolutionText(record.renderResolution))
-                AliveRow("Restricted apps alive at ${BackgroundRestrictor.ALIVE_CHECK_DELAY_MS / 1000} s", record.restrictedAliveEarly)
-                AliveRow("Restricted apps alive at end", record.restrictedAliveAtEnd)
-                // Every session saved since these existed has a profile; one without predates them.
-                val recorded = record.profile != null
-                SummaryRow("Game mode at start", if (recorded) GameStateRef.display(record.gameStateStart) else "not recorded")
-                SummaryRow("Game mode at end", if (recorded) GameStateRef.display(record.gameStateEnd) else "not recorded")
-                SummaryRow("Changed by another app", contaminationText(record.contamination))
-                SummaryRow("Duration", durationText(record.durationMs))
-                SummaryRow("Ended", endReasonText(record.endReason))
-                SummaryRow(
-                    "Sampled",
-                    when {
-                        !recorded -> "not recorded"
-                        record.continuity == null -> "too short to say"
-                        else -> "${(record.continuity * 100).roundToInt()}% of the session"
-                    }
-                )
-                SummaryRow("Average FPS", fpsText(record.avgFps))
-                SummaryRow("1% low FPS", fpsText(record.onePercentLowFps))
-                SummaryRow(
-                    "Pauses of 1 s or more",
-                    record.pauseCount?.let { n -> if (n == 0) "none" else "$n, ${durationText(record.pauseMs ?: 0L)} in all (not in FPS)" } ?: "not recorded"
-                )
-                SummaryRow(
-                    "Battery temperature",
-                    if (record.batteryTempStart == null && record.batteryTempEnd == null) {
-                        "unavailable"
-                    } else {
-                        "${record.batteryTempStart?.let { tempText(it) } ?: "?"} to ${record.batteryTempEnd?.let { tempText(it) } ?: "?"}"
-                    }
-                )
-                SummaryRow("Time to thermal status 1+", timeToThermal)
-                SummaryRow("Max thermal status", thermalText(record.maxThermal))
-                SummaryRow(
-                    "Samples",
-                    "${record.samples} (FPS in ${record.fpsSamples}, thermal in ${record.thermalSamples})"
-                )
+                SessionRows(record)
 
                 if (record.baselineInvalid || record.contaminated || record.gameRestarted) {
                     Spacer(Modifier.height(14.dp))
@@ -1983,14 +2016,11 @@ private class DashTile(val label: String, val value: String, val unit: String? =
 /**
  * RAM and battery temperature as large tiles, and the newest saved session's average FPS and 1%
  * low. A figure with no source is not drawn: the session tiles are absent until a session has
- * measured them, and the battery tile when the system reports no temperature. REACH and DISPLAY
- * stay below as smaller cards.
+ * measured them, and the battery tile when the system reports no temperature.
  */
 @Composable
 private fun TelemetryDashboard(
     ram: RamInfo?,
-    reachabilityMs: Int,
-    hz: Int?,
     batteryTempC: Float?,
     lastSession: SessionRecord?
 ) {
@@ -2008,29 +2038,35 @@ private fun TelemetryDashboard(
                 pair.forEach { StatTile(it.label, it.value, tile.weight(1f), it.unit, it.progress) }
             }
         }
-        val reachColor = when {
-            reachabilityMs < 0 -> Tac.TextLo
-            reachabilityMs < 50 -> Tac.Green
-            reachabilityMs < 100 -> Tac.Amber
-            else -> Tac.Red
-        }
-        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            // Not a ping: this is round-trip reachability to a DNS host, measured outside the
-            // tunnel, so it is labelled for what it is (L3).
-            TelemetryCard(
-                label = "REACH",
-                value = if (reachabilityMs >= 0) "$reachabilityMs" else "--",
-                subValue = "MS TO DNS",
-                statusColor = reachColor,
-                modifier = tile.weight(1f)
-            )
-            TelemetryCard(
-                label = "DISPLAY",
-                value = hz?.toString() ?: "--",
-                subValue = "HZ RATE",
-                modifier = tile.weight(1f)
-            )
-        }
+    }
+}
+
+/** REACH and DISPLAY, inside the BOOST page's STATUS card. */
+@Composable
+private fun ConnectionCards(reachabilityMs: Int, hz: Int?) {
+    val tile = Modifier.fillMaxHeight()
+    val reachColor = when {
+        reachabilityMs < 0 -> Tac.TextLo
+        reachabilityMs < 50 -> Tac.Green
+        reachabilityMs < 100 -> Tac.Amber
+        else -> Tac.Red
+    }
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        // Not a ping: this is round-trip reachability to a DNS host, measured outside the
+        // tunnel, so it is labelled for what it is (L3).
+        TelemetryCard(
+            label = "REACH",
+            value = if (reachabilityMs >= 0) "$reachabilityMs" else "--",
+            subValue = "MS TO DNS",
+            statusColor = reachColor,
+            modifier = tile.weight(1f)
+        )
+        TelemetryCard(
+            label = "DISPLAY",
+            value = hz?.toString() ?: "--",
+            subValue = "HZ RATE",
+            modifier = tile.weight(1f)
+        )
     }
 }
 

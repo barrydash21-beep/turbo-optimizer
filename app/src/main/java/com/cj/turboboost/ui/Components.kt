@@ -3,6 +3,15 @@ package com.cj.turboboost.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -172,16 +182,39 @@ fun StatusPill(text: String, color: Color, modifier: Modifier = Modifier) {
     }
 }
 
-/** What the right-hand pane shows. These are the sections of the existing screen, not new screens. */
-enum class RailTab(val label: String) {
-    OVERVIEW("STATUS"),
-    OPTIONS("OPTIONS"),
+/**
+ * The app's four pages. One enum and one saved state drive both the portrait bottom bar and the
+ * landscape rail, so they always show the same pages.
+ */
+enum class Page(val label: String) {
+    BOOST("BOOST"),
+    APPS("APPS"),
+    TUNE("TUNE"),
     REPORTS("REPORTS")
+}
+
+/** One page's icon and name, selectable like a tab so screen readers announce which page is open. */
+@Composable
+private fun PageItem(page: Page, active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val tint = if (active) Tac.Accent else Tac.TextLo
+    Column(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (active) Tac.Accent.copy(alpha = 0.14f) else Color.Transparent)
+            .selectable(selected = active, role = Role.Tab, onClick = onClick)
+            .semantics { contentDescription = "${page.label.lowercase().replaceFirstChar { it.uppercase() }} page${if (active) ", selected" else ""}" }
+            .padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Canvas(Modifier.size(22.dp)) { drawPageIcon(page, tint) }
+        Spacer(Modifier.height(4.dp))
+        Text(page.label, color = tint, fontSize = 9.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold, fontFamily = UiFont, maxLines = 1)
+    }
 }
 
 /** The narrow icon rail on the left of the landscape layout. */
 @Composable
-fun IconRail(selected: RailTab, onSelect: (RailTab) -> Unit, modifier: Modifier = Modifier) {
+fun IconRail(selected: Page, onSelect: (Page) -> Unit, modifier: Modifier = Modifier) {
     Column(
         modifier
             .fillMaxHeight()
@@ -191,33 +224,135 @@ fun IconRail(selected: RailTab, onSelect: (RailTab) -> Unit, modifier: Modifier 
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        RailTab.entries.forEach { tab ->
-            val active = tab == selected
-            val tint = if (active) Tac.Accent else Tac.TextLo
+        Page.entries.forEach { page ->
+            PageItem(page, page == selected, { onSelect(page) }, Modifier.width(60.dp))
+        }
+    }
+}
+
+/** The bar along the bottom of the portrait layout. */
+@Composable
+fun PageBar(selected: Page, onSelect: (Page) -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .background(Tac.Surface)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Page.entries.forEach { page ->
+            PageItem(page, page == selected, { onSelect(page) }, Modifier.weight(1f))
+        }
+    }
+}
+
+/**
+ * A page's content. Narrow: [left] then [right], one scrolling column. Wide: two columns, each
+ * scrolling on its own.
+ */
+@Composable
+fun PageColumns(
+    wide: Boolean,
+    left: @Composable ColumnScope.() -> Unit,
+    right: @Composable ColumnScope.() -> Unit
+) {
+    if (wide) {
+        Row(Modifier.fillMaxSize()) {
             Column(
                 Modifier
-                    .width(60.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (active) Tac.Accent.copy(alpha = 0.14f) else Color.Transparent)
-                    .selectable(selected = active, role = Role.Tab, onClick = { onSelect(tab) })
-                    .semantics { contentDescription = "${tab.label.lowercase().replaceFirstChar { it.uppercase() }} section${if (active) ", selected" else ""}" }
-                    .padding(vertical = 10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                content = left
+            )
+            Column(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 8.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                content = right
+            )
+        }
+    } else {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            left()
+            right()
+        }
+    }
+}
+
+/**
+ * A card that is closed until opened, for the options a page does not need on first sight.
+ * [state] is a short word shown beside the title while it is closed, such as ON or OFF. Whether
+ * it is open survives rotation and the process being killed.
+ */
+@Composable
+fun CollapsibleCard(
+    title: String,
+    modifier: Modifier = Modifier,
+    state: String? = null,
+    enabled: Boolean = true,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    var expanded by rememberSaveable(title) { mutableStateOf(false) }
+    Surface(
+        modifier = modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.5f),
+        shape = RoundedCornerShape(16.dp),
+        color = Tac.Surface,
+        border = BorderStroke(1.dp, Tac.Line)
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(role = Role.Button, onClickLabel = if (expanded) "Hide $title" else "Show $title") { expanded = !expanded }
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Canvas(Modifier.size(22.dp)) { drawRailIcon(tab, tint) }
-                Spacer(Modifier.height(4.dp))
-                Text(tab.label, color = tint, fontSize = 8.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold, fontFamily = UiFont, maxLines = 1)
+                SectionLabel(title, Modifier.weight(1f))
+                if (state != null) {
+                    Text(state, color = Tac.TextHi, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = UiFont)
+                    Spacer(Modifier.width(12.dp))
+                }
+                Text(if (expanded) "HIDE" else "SHOW", color = Tac.Accent, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = UiFont)
+            }
+            if (expanded) {
+                Spacer(Modifier.height(8.dp))
+                content()
             }
         }
     }
 }
 
-private fun DrawScope.drawRailIcon(tab: RailTab, tint: Color) {
+private fun DrawScope.drawPageIcon(page: Page, tint: Color) {
     val w = size.width
     val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
-    when (tab) {
+    when (page) {
+        // A play triangle.
+        Page.BOOST -> {
+            val path = Path().apply {
+                moveTo(w * 0.22f, w * 0.1f)
+                lineTo(w * 0.9f, w * 0.5f)
+                lineTo(w * 0.22f, w * 0.9f)
+                close()
+            }
+            drawPath(path, tint, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
         // Four tiles.
-        RailTab.OVERVIEW -> {
+        Page.APPS -> {
             val cell = w * 0.42f
             for (x in 0..1) for (y in 0..1) {
                 drawRoundRect(
@@ -230,7 +365,7 @@ private fun DrawScope.drawRailIcon(tab: RailTab, tint: Color) {
             }
         }
         // Two sliders.
-        RailTab.OPTIONS -> {
+        Page.TUNE -> {
             val ys = listOf(w * 0.3f, w * 0.7f)
             val knobs = listOf(w * 0.35f, w * 0.7f)
             ys.forEachIndexed { i, y ->
@@ -240,7 +375,7 @@ private fun DrawScope.drawRailIcon(tab: RailTab, tint: Color) {
             }
         }
         // Three bars.
-        RailTab.REPORTS -> {
+        Page.REPORTS -> {
             val heights = listOf(0.45f, 0.95f, 0.7f)
             heights.forEachIndexed { i, h ->
                 val x = w * (0.1f + i * 0.35f)
