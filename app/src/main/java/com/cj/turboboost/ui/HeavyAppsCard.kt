@@ -148,7 +148,7 @@ private fun HeavyAppRow(app: HeavyApp, title: String, enabled: Boolean, onStop: 
                 Text("STOP", color = if (enabled) Tac.Bg else Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, fontFamily = UiFont)
             }
         }
-        Text("Stop: not restorable until opened", color = Tac.TextLo, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
+        Text("Stop: not restorable until opened, and the app may start again. Restrict: applies when a boost starts.", color = Tac.TextLo, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
     }
 }
 

@@ -609,9 +609,9 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                         HeavyApps.restrictedWith(restrictList, BackgroundRestrictor.defaultsFor(installed, protected), pkg)
                     )
                     if (restrictEnabled) {
-                        "$name added to the restriction list"
+                        "$name added to the restriction list. It applies when a boost starts"
                     } else {
-                        "$name added to the restriction list. Restriction is off in Options"
+                        "$name added to the restriction list, but restriction is off in Options, so a boost will not apply it"
                     }
                 }
             }
