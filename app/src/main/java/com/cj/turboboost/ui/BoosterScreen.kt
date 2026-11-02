@@ -29,7 +29,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -44,8 +43,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -89,42 +88,6 @@ enum class BoostStep(val label: String) {
     CLEANING("PURGING RAM"),
     STABILIZING("LOCKING PING"),
     LAUNCHING("LAUNCHING")
-}
-
-// ---------------------------------------------------------------------------
-// Principal Palette & Theme
-// ---------------------------------------------------------------------------
-
-object Tac {
-    val Bg = Color(0xFF0D1117)
-    val Surface = Color(0xFF121824)
-    val SurfaceElevated = Color(0xFF1A2234)
-    val Line = Color(0xFF2D364D)
-    
-    val Cyan = Color(0xFF00F2FE)
-    val Amber = Color(0xFFFFB020)
-    val Green = Color(0xFF00E676)
-    val Red = Color(0xFFFF3366)
-    
-    val TextHi = Color(0xFFE6EDF3)
-    val TextLo = Color(0xFF8B949E)
-}
-
-private val Mono = FontFamily.Monospace
-
-@Composable
-fun TurboTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = Tac.Cyan,
-            secondary = Tac.Amber,
-            background = Tac.Bg,
-            surface = Tac.Surface,
-            onBackground = Tac.TextHi,
-            onSurface = Tac.TextHi
-        ),
-        content = content
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -214,142 +177,155 @@ fun BoosterScreen(
         }
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Tac.Bg)
-            .drawBehind {
-                // Tactical Background Grid
-                val gap = 45.dp.toPx()
-                val gridColor = Tac.Line.copy(alpha = 0.12f)
-                var x = 0f
-                while (x < size.width) {
-                    drawLine(gridColor, Offset(x, 0f), Offset(x, size.height), 1f)
-                    x += gap
-                }
-                var y = 0f
-                while (y < size.height) {
-                    drawLine(gridColor, Offset(0f, y), Offset(size.width, y), 1f)
-                    y += gap
-                }
-                
-                // Ambient Center Glow
-                drawRect(
-                    Brush.radialGradient(
-                        colors = listOf(Tac.Cyan.copy(alpha = 0.07f), Color.Transparent),
-                        center = center,
-                        radius = size.minDimension * 0.8f
-                    )
-                )
-            }
-    ) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .systemBarsPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+    // Each section is built once and placed by the layout below, wide or narrow.
+    val gamesSection: @Composable () -> Unit = {
+        GameSelector(
+            games = games,
+            selectedGame = selectedGame,
+            rates = rates,
+            enabled = !busy,
+            onSelectGame = onSelectGame,
+            onRateChange = onRateChange,
+            onAddGame = onOpenPicker,
+            onRemoveGame = onRemoveGame,
+            resolution = if (resolutionSupported) gameResolution else null,
+            shizukuReady = shizuku == ShizukuState.READY,
+            onPickResolution = onPickResolution,
+            onPickFpsCap = onPickFpsCap,
+            onRestoreResolutionAnyway = onRestoreResolutionAnyway,
+            onRestartGame = { restartTarget = it }
+        )
+    }
+    val optionsSection: @Composable () -> Unit = {
+        OptionsModule(
+            profile = profile,
+            vpnEnabled = vpnEnabled,
+            restrictEnabled = restrictEnabled,
+            enabled = !busy,
+            onProfileChange = onProfileChange,
+            onVpnEnabledChange = onVpnEnabledChange,
+            onRestrictEnabledChange = onRestrictEnabledChange,
+            onEditRestricted = onOpenRestrictEditor
+        )
+    }
+    val statusCards: @Composable () -> Unit = {
+        Row(
+            modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Max),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Header()
-
-            Spacer(Modifier.height(28.dp))
-
-            TelemetryDashboard(
-                ram = deviceStats?.first,
-                reachabilityMs = reachability,
-                hz = deviceStats?.second?.let { RefreshRate.display(it) }
+            InteractiveStatusCard(
+                label = "SHIZUKU",
+                state = shizuku,
+                modifier = Modifier.weight(1f).fillMaxHeight()
             )
-
-            Spacer(Modifier.height(28.dp))
-
-            GameSelector(
-                games = games,
-                selectedGame = selectedGame,
-                rates = rates,
-                enabled = !busy,
-                onSelectGame = onSelectGame,
-                onRateChange = onRateChange,
-                onAddGame = onOpenPicker,
-                onRemoveGame = onRemoveGame,
-                resolution = if (resolutionSupported) gameResolution else null,
-                shizukuReady = shizuku == ShizukuState.READY,
-                onPickResolution = onPickResolution,
-                onPickFpsCap = onPickFpsCap,
-                onRestoreResolutionAnyway = onRestoreResolutionAnyway,
-                onRestartGame = { restartTarget = it }
+            InteractiveStatusCard(
+                label = "STABILIZER",
+                vpn = vpnState,
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                onStop = onStopVpn,
+                showStop = !busy
             )
+        }
+    }
+    val diagnosticsSection: @Composable () -> Unit = {
+        DiagnosticsSection(ui = diagnostics, onRun = onRunDiagnostics, report = diagnosticsReport)
+    }
+    val comparisonSection: @Composable () -> Unit = {
+        SessionComparisonSection(
+            gamePackage = selectedGame,
+            gameLabel = selected?.label,
+            sessions = comparisonSessions,
+            onOpen = onLoadComparison
+        )
+    }
+    val statTiles: @Composable () -> Unit = {
+        TelemetryDashboard(
+            ram = deviceStats?.first,
+            reachabilityMs = reachability,
+            hz = deviceStats?.second?.let { RefreshRate.display(it) },
+            // No live source is wired for these yet; they read N/A rather than a guess.
+            cpuPercent = null,
+            gpuPercent = null,
+            fps = null,
+            thermalStatus = null
+        )
+    }
+    // Always reachable: the system changes a boost makes (DND, animation scales,
+    // refresh rate) outlive the VPN, so the exit must not be gated on it.
+    val restore: @Composable () -> Unit = { RestoreButton(enabled = !busy, onClick = onRestore) }
 
-            Spacer(Modifier.height(20.dp))
-
-            BoostButton(
-                step = step,
-                accent = accent,
-                gameName = selected?.profile?.displayName,
-                onClick = onBoost
-            )
-
-            Spacer(Modifier.height(8.dp))
-
-            MeasureButton(enabled = !busy && selected != null, onClick = onMeasure)
-
-            Spacer(Modifier.height(28.dp))
-
-            StepTracker(current = step, includeStabilizing = vpnEnabled)
-
-            Spacer(Modifier.height(28.dp))
-
-            OptionsModule(
-                profile = profile,
-                vpnEnabled = vpnEnabled,
-                restrictEnabled = restrictEnabled,
-                enabled = !busy,
-                onProfileChange = onProfileChange,
-                onVpnEnabledChange = onVpnEnabledChange,
-                onRestrictEnabledChange = onRestrictEnabledChange,
-                onEditRestricted = onOpenRestrictEditor
-            )
-
-            Spacer(Modifier.height(14.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                InteractiveStatusCard(
-                    label = "SHIZUKU",
-                    state = shizuku,
-                    modifier = Modifier.weight(1f)
-                )
-                InteractiveStatusCard(
-                    label = "STABILIZER",
-                    vpn = vpnState,
-                    modifier = Modifier.weight(1f),
-                    onStop = onStopVpn,
-                    showStop = !busy
-                )
+    Box(Modifier.fillMaxSize().background(Tac.BgBrush)) {
+        BoxWithConstraints(Modifier.fillMaxSize().systemBarsPadding()) {
+            val wide = maxWidth >= 600.dp && maxWidth > maxHeight
+            if (wide) {
+                var tabName by rememberSaveable { mutableStateOf(RailTab.OVERVIEW.name) }
+                val tab = RailTab.entries.firstOrNull { it.name == tabName } ?: RailTab.OVERVIEW
+                Row(Modifier.fillMaxSize()) {
+                    IconRail(selected = tab, onSelect = { tabName = it.name })
+                    // Left: pick, boost, undo. Right: the section the rail selects.
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Header()
+                        Spacer(Modifier.height(12.dp))
+                        BoostButton(step = step, accent = accent, gameName = selected?.profile?.displayName, onClick = onBoost, diameter = 210.dp)
+                        Spacer(Modifier.height(8.dp))
+                        StepTracker(current = step, includeStabilizing = vpnEnabled)
+                        Spacer(Modifier.height(12.dp))
+                        gamesSection()
+                        Spacer(Modifier.height(10.dp))
+                        MeasureButton(enabled = !busy && selected != null, onClick = onMeasure)
+                        Spacer(Modifier.height(4.dp))
+                        restore()
+                    }
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState())
+                            .padding(start = 4.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        when (tab) {
+                            RailTab.OVERVIEW -> {
+                                statTiles()
+                                statusCards()
+                            }
+                            RailTab.OPTIONS -> optionsSection()
+                            RailTab.REPORTS -> {
+                                diagnosticsSection()
+                                comparisonSection()
+                            }
+                        }
+                    }
+                }
+            } else {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Header()
+                    statTiles()
+                    gamesSection()
+                    BoostButton(step = step, accent = accent, gameName = selected?.profile?.displayName, onClick = onBoost)
+                    MeasureButton(enabled = !busy && selected != null, onClick = onMeasure)
+                    StepTracker(current = step, includeStabilizing = vpnEnabled)
+                    optionsSection()
+                    statusCards()
+                    restore()
+                    diagnosticsSection()
+                    comparisonSection()
+                }
             }
-            
-            Spacer(Modifier.height(12.dp))
-
-            // Always reachable: the system changes a boost makes (DND, animation scales,
-            // refresh rate) outlive the VPN, so the exit must not be gated on it.
-            RestoreButton(enabled = !busy, onClick = onRestore)
-
-            Spacer(Modifier.height(12.dp))
-
-            DiagnosticsSection(ui = diagnostics, onRun = onRunDiagnostics, report = diagnosticsReport)
-
-            Spacer(Modifier.height(12.dp))
-
-            SessionComparisonSection(
-                gamePackage = selectedGame,
-                gameLabel = selected?.label,
-                sessions = comparisonSessions,
-                onOpen = onLoadComparison
-            )
-
-            Spacer(Modifier.height(12.dp))
         }
 
         if (pickerOpen) {
@@ -438,9 +414,9 @@ private fun GameResolutionRow(
         )
     }
 
-    Text("RENDER RESOLUTION", color = Tac.TextLo, fontSize = 10.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Black)
+    Text("RENDER RESOLUTION", color = Tac.TextLo, fontSize = 10.sp, letterSpacing = LabelTracking, fontWeight = FontWeight.Black)
     Spacer(Modifier.height(8.dp))
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    SegmentedBar {
         val options = listOf<Triple<String, String?, ResolutionLevel?>>(Triple("DEFAULT", null, null)) +
             ResolutionLevel.entries.map { Triple(it.label, it.factor, it) }
         options.forEach { (label, factor, level) ->
@@ -450,7 +426,6 @@ private fun GameResolutionRow(
                 factor = factor,
                 selected = isSelected,
                 enabled = usable,
-                modifier = Modifier.weight(1f).fillMaxHeight(),
                 // Nothing changes until the dialog is confirmed; the selected chip asks nothing.
                 onClick = { if (!isSelected) pendingChoice = level?.name ?: DEFAULT_CHOICE }
             )
@@ -459,7 +434,7 @@ private fun GameResolutionRow(
 
     status?.result?.let {
         Spacer(Modifier.height(8.dp))
-        Text(it, color = Tac.Cyan, fontSize = 11.sp, fontFamily = Mono)
+        Text(it, color = Tac.Cyan, fontSize = 11.sp, fontFamily = UiFont)
     }
 
     if (status?.pendingRestart == true) {
@@ -545,9 +520,9 @@ private fun FpsCapRow(
         )
     }
 
-    Text("THERMAL FPS CAP", color = Tac.TextLo, fontSize = 10.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Black)
+    Text("THERMAL FPS CAP", color = Tac.TextLo, fontSize = 10.sp, letterSpacing = LabelTracking, fontWeight = FontWeight.Black)
     Spacer(Modifier.height(8.dp))
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    SegmentedBar {
         val options = listOf<Pair<String, FpsCap?>>("OFF" to null) + FpsCap.entries.map { it.label to it }
         options.forEach { (label, cap) ->
             val isSelected = status != null && status.unavailableReason == null && status.cap == cap
@@ -556,7 +531,6 @@ private fun FpsCapRow(
                 factor = cap?.let { "FPS" },
                 selected = isSelected,
                 enabled = usable,
-                modifier = Modifier.weight(1f).fillMaxHeight(),
                 onClick = { if (!isSelected) pendingChoice = cap?.name ?: OFF_CHOICE }
             )
         }
@@ -576,7 +550,7 @@ private fun FpsCapRow(
             measured?.let { "Last session at ${cap.label}: ${fpsText(it)} FPS average" } ?: "Not measured yet",
             color = Tac.Cyan,
             fontSize = 11.sp,
-            fontFamily = Mono
+            fontFamily = UiFont
         )
         // Only while the game holds exactly what Turbo set; otherwise the resolution row says what changed.
         if (status.changedOutside == null && !status.resetByRestart) {
@@ -617,19 +591,19 @@ private fun FpsCapConfirmDialog(
         onDismissRequest = onDismiss,
         containerColor = Tac.Surface,
         title = {
-            Text(title, color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            Text(title, color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
         },
         text = {
             Text(body, color = Tac.TextLo, fontSize = 12.sp, lineHeight = 17.sp)
         },
         confirmButton = {
             Button(onClick = onConfirm, colors = ButtonDefaults.buttonColors(containerColor = Tac.Cyan), shape = RoundedCornerShape(10.dp)) {
-                Text(if (cap == null) "TURN OFF" else "APPLY", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+                Text(if (cap == null) "TURN OFF" else "APPLY", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = UiFont)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("CANCEL", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                Text("CANCEL", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
             }
         }
     )
@@ -644,37 +618,27 @@ private fun ResolutionAction(label: String, enabled: Boolean, onClick: () -> Uni
             fontSize = 11.sp,
             fontWeight = FontWeight.Black,
             letterSpacing = 1.sp,
-            fontFamily = Mono
+            fontFamily = UiFont
         )
     }
 }
 
 @Composable
-private fun ResolutionChip(
+private fun RowScope.ResolutionChip(
     label: String,
     factor: String?,
     selected: Boolean,
     enabled: Boolean,
-    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    Surface(
-        modifier = modifier
-            .heightIn(min = 40.dp)
-            .alpha(if (enabled) 1f else 0.5f)
-            .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
-            .semantics { contentDescription = "$label${factor?.let { " $it" }.orEmpty()}${if (selected) ", selected" else ""}" },
-        shape = RoundedCornerShape(10.dp),
-        color = if (selected) Tac.Cyan.copy(alpha = 0.12f) else Color.Transparent,
-        border = BorderStroke(1.dp, if (selected) Tac.Cyan else Tac.Line)
-    ) {
-        Box(Modifier.padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
-            val tint = if (selected) Tac.Cyan else Tac.TextLo
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(label, color = tint, fontSize = 10.sp, fontWeight = FontWeight.Black, fontFamily = Mono, maxLines = 1)
-                factor?.let { Text(it, color = tint, fontSize = 10.sp, fontFamily = Mono, maxLines = 1) }
-            }
-        }
+    Segment(
+        selected = selected,
+        enabled = enabled,
+        description = "$label${factor?.let { " $it" }.orEmpty()}${if (selected) ", selected" else ""}",
+        onClick = onClick
+    ) { tint ->
+        Text(label, color = tint, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = UiFont, maxLines = 1)
+        factor?.let { Text(it, color = tint, fontSize = 10.sp, fontFamily = UiFont, maxLines = 1) }
     }
 }
 
@@ -707,19 +671,19 @@ private fun ResolutionConfirmDialog(
         onDismissRequest = onDismiss,
         containerColor = Tac.Surface,
         title = {
-            Text(title, color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            Text(title, color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
         },
         text = {
             Text(body, color = Tac.TextLo, fontSize = 12.sp, lineHeight = 17.sp)
         },
         confirmButton = {
             Button(onClick = onConfirm, colors = ButtonDefaults.buttonColors(containerColor = Tac.Cyan), shape = RoundedCornerShape(10.dp)) {
-                Text(if (level == null) "RESTORE" else "APPLY", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+                Text(if (level == null) "RESTORE" else "APPLY", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = UiFont)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("CANCEL", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                Text("CANCEL", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
             }
         }
     )
@@ -732,7 +696,7 @@ private fun RestartGameDialog(gameLabel: String, onConfirm: () -> Unit, onDismis
         onDismissRequest = onDismiss,
         containerColor = Tac.Surface,
         title = {
-            Text("RESTART $gameLabel?", color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            Text("RESTART $gameLabel?", color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
         },
         text = {
             Text(
@@ -745,12 +709,12 @@ private fun RestartGameDialog(gameLabel: String, onConfirm: () -> Unit, onDismis
         },
         confirmButton = {
             Button(onClick = onConfirm, colors = ButtonDefaults.buttonColors(containerColor = Tac.Amber), shape = RoundedCornerShape(10.dp)) {
-                Text("CLOSE AND RESTART", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+                Text("CLOSE AND RESTART", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = UiFont)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("CANCEL", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                Text("CANCEL", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
             }
         }
     )
@@ -763,7 +727,7 @@ private fun DisplayOverrideDialog(state: DisplayState, onReset: () -> Unit, onKe
         onDismissRequest = {},
         containerColor = Tac.Surface,
         title = {
-            Text("DISPLAY OVERRIDE", color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            Text("DISPLAY OVERRIDE", color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
         },
         text = {
             Text(
@@ -777,12 +741,12 @@ private fun DisplayOverrideDialog(state: DisplayState, onReset: () -> Unit, onKe
         },
         confirmButton = {
             Button(onClick = onReset, colors = ButtonDefaults.buttonColors(containerColor = Tac.Cyan), shape = RoundedCornerShape(10.dp)) {
-                Text("RESET", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+                Text("RESET", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = UiFont)
             }
         },
         dismissButton = {
             TextButton(onClick = onKeep) {
-                Text("KEEP", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                Text("KEEP", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
             }
         }
     )
@@ -805,7 +769,7 @@ private fun OptionsModule(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.5f),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         color = Tac.Surface,
         border = BorderStroke(1.dp, Tac.Line)
     ) {
@@ -814,21 +778,17 @@ private fun OptionsModule(
                 "PROFILE",
                 color = Tac.TextLo,
                 fontSize = 10.sp,
-                letterSpacing = 3.sp,
+                letterSpacing = LabelTracking,
                 fontWeight = FontWeight.Black
             )
             Spacer(Modifier.height(12.dp))
 
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            SegmentedBar {
                 BoostProfile.entries.forEach { entry ->
                     ProfileChip(
                         profile = entry,
                         selected = entry == profile,
                         enabled = enabled,
-                        modifier = Modifier.weight(1f),
                         onClick = { onProfileChange(entry) }
                     )
                 }
@@ -868,7 +828,7 @@ private fun OptionsModule(
                         color = Tac.TextHi,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
-                        fontFamily = Mono
+                        fontFamily = UiFont
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
@@ -907,7 +867,7 @@ private fun OptionsModule(
                         color = Tac.TextHi,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
-                        fontFamily = Mono
+                        fontFamily = UiFont
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
@@ -926,7 +886,7 @@ private fun OptionsModule(
                         enabled = enabled,
                         contentPadding = PaddingValues(0.dp)
                     ) {
-                        Text("EDIT LIST", color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                        Text("EDIT LIST", color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
                     }
                 }
                 Switch(
@@ -975,7 +935,7 @@ private fun RestrictListDialog(
         onDismissRequest = onDismiss,
         containerColor = Tac.Surface,
         title = {
-            Text("BACKGROUND APPS", color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            Text("BACKGROUND APPS", color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
         },
         text = {
             Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
@@ -1025,7 +985,7 @@ private fun RestrictListDialog(
                             label = { Text("Package name", fontSize = 11.sp) },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
-                            textStyle = LocalTextStyle.current.copy(fontSize = 12.sp, fontFamily = Mono),
+                            textStyle = LocalTextStyle.current.copy(fontSize = 12.sp, fontFamily = UiFont),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = Tac.TextHi,
                                 unfocusedTextColor = Tac.TextHi,
@@ -1048,7 +1008,7 @@ private fun RestrictListDialog(
                                         match,
                                         color = Tac.TextHi,
                                         fontSize = 12.sp,
-                                        fontFamily = Mono,
+                                        fontFamily = UiFont,
                                         modifier = Modifier.fillMaxWidth().clickable { onAdd(match) }.padding(vertical = 6.dp)
                                     )
                                 }
@@ -1060,7 +1020,7 @@ private fun RestrictListDialog(
                             colors = ButtonDefaults.buttonColors(containerColor = Tac.Cyan),
                             shape = RoundedCornerShape(10.dp)
                         ) {
-                            Text("ADD", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+                            Text("ADD", color = Tac.Bg, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = UiFont)
                         }
                     }
                 }
@@ -1072,12 +1032,12 @@ private fun RestrictListDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("CLOSE", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                Text("CLOSE", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
             }
         },
         dismissButton = {
             TextButton(onClick = onReset) {
-                Text("DEFAULTS", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                Text("DEFAULTS", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
             }
         }
     )
@@ -1088,58 +1048,29 @@ private fun RestrictRow(title: String, packageName: String, status: String?, act
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, color = Tac.TextHi, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-            if (title != packageName) Text(packageName, color = Tac.TextLo, fontSize = 11.sp, fontFamily = Mono)
+            if (title != packageName) Text(packageName, color = Tac.TextLo, fontSize = 11.sp, fontFamily = UiFont)
             if (status != null) Text(status, color = Tac.TextLo, fontSize = 11.sp, lineHeight = 15.sp)
         }
         TextButton(onClick = onAction) {
-            Text(action, color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            Text(action, color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
         }
     }
 }
 
 @Composable
-private fun ProfileChip(
+private fun RowScope.ProfileChip(
     profile: BoostProfile,
     selected: Boolean,
     enabled: Boolean,
-    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    val accent = Tac.Cyan
-    val border by animateColorAsState(
-        if (selected) accent else Tac.Line,
-        label = "chipBorder"
-    )
-    val bg by animateColorAsState(
-        if (selected) accent.copy(alpha = 0.12f) else Color.Transparent,
-        label = "chipBg"
-    )
-
-    Surface(
-        // selectable (not clickable) so screen readers announce which profile is chosen (L6).
-        modifier = modifier
-            .height(40.dp)
-            .selectable(
-                selected = selected,
-                enabled = enabled,
-                role = Role.RadioButton,
-                onClick = onClick
-            )
-            .semantics { contentDescription = "${profile.label} profile. ${profile.blurb}" },
-        shape = RoundedCornerShape(10.dp),
-        color = bg,
-        border = BorderStroke(1.dp, border)
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Text(
-                profile.label,
-                color = if (selected) accent else Tac.TextLo,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 1.sp,
-                fontFamily = Mono
-            )
-        }
+    Segment(
+        selected = selected,
+        enabled = enabled,
+        description = "${profile.label} profile. ${profile.blurb}",
+        onClick = onClick
+    ) { tint ->
+        Text(profile.label, color = tint, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, fontFamily = UiFont, maxLines = 1)
     }
 }
 
@@ -1170,7 +1101,7 @@ private fun GameSelector(
             "GAME",
             color = Tac.TextLo,
             fontSize = 10.sp,
-            letterSpacing = 3.sp,
+            letterSpacing = LabelTracking,
             fontWeight = FontWeight.Black
         )
         Spacer(Modifier.height(10.dp))
@@ -1221,7 +1152,7 @@ private fun GameSelector(
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, Tac.Line)
             ) {
-                Text("+ ADD GAME", color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                Text("+ ADD GAME", color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
             }
         }
     }
@@ -1234,7 +1165,7 @@ private fun AppPickerDialog(apps: List<LaunchableApp>?, onPick: (String) -> Unit
         onDismissRequest = onDismiss,
         containerColor = Tac.Surface,
         title = {
-            Text("ADD A GAME", color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+            Text("ADD A GAME", color = Tac.TextHi, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
         },
         text = {
             when {
@@ -1264,7 +1195,7 @@ private fun AppPickerDialog(apps: List<LaunchableApp>?, onPick: (String) -> Unit
         confirmButton = {},
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("CANCEL", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                Text("CANCEL", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
             }
         }
     )
@@ -1323,15 +1254,15 @@ private fun GameCard(
                     fontWeight = FontWeight.Bold
                 )
                 if (selected) {
-                    Text("SELECTED", color = Tac.Cyan, fontSize = 9.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                    Text("SELECTED", color = Tac.Cyan, fontSize = 9.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
                 }
                 TextButton(onClick = onRemove, enabled = enabled) {
-                    Text("REMOVE", color = Tac.TextLo, fontSize = 9.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                    Text("REMOVE", color = Tac.TextLo, fontSize = 9.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
                 }
             }
 
             Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SegmentedBar {
                 game.supportedRates.forEach { option ->
                     RateChip(
                         rate = option,
@@ -1380,26 +1311,15 @@ private fun GameCard(
 }
 
 @Composable
-private fun RateChip(rate: Float, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+private fun RowScope.RateChip(rate: Float, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
     val hz = RefreshRate.display(rate)
-    Surface(
-        modifier = Modifier
-            .height(32.dp)
-            .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
-            .semantics { contentDescription = "$hz hertz${if (selected) ", selected" else ""}" },
-        shape = RoundedCornerShape(8.dp),
-        color = if (selected) Tac.Cyan.copy(alpha = 0.15f) else Color.Transparent,
-        border = BorderStroke(1.dp, if (selected) Tac.Cyan else Tac.Line)
-    ) {
-        Box(Modifier.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
-            Text(
-                "$hz HZ",
-                color = if (selected) Tac.Cyan else Tac.TextLo,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Black,
-                fontFamily = Mono
-            )
-        }
+    Segment(
+        selected = selected,
+        enabled = enabled,
+        description = "$hz hertz${if (selected) ", selected" else ""}",
+        onClick = onClick
+    ) { tint ->
+        Text("$hz HZ", color = tint, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = UiFont, maxLines = 1)
     }
 }
 
@@ -1481,13 +1401,13 @@ private fun SessionSummary(
     ) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(16.dp),
             color = Tac.Surface,
             border = BorderStroke(1.dp, Tac.Line)
         ) {
             // Scrolls: in landscape the rows are taller than the screen and CLOSE ended up off it.
             Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
-                Text("SESSION SUMMARY", color = Tac.Cyan, fontSize = 12.sp, fontWeight = FontWeight.Black, letterSpacing = 3.sp, fontFamily = Mono)
+                Text("SESSION SUMMARY", color = Tac.Cyan, fontSize = 12.sp, fontWeight = FontWeight.Black, letterSpacing = LabelTracking, fontFamily = UiFont)
                 Spacer(Modifier.height(4.dp))
                 Text(name, color = Tac.TextHi, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(16.dp))
@@ -1580,14 +1500,14 @@ private fun SessionSummary(
                             color = Tac.Bg,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Black,
-                            fontFamily = Mono
+                            fontFamily = UiFont
                         )
                     }
                 }
 
                 Spacer(Modifier.height(8.dp))
                 TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
-                    Text("CLOSE", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp, fontFamily = Mono)
+                    Text("CLOSE", color = Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp, fontFamily = UiFont)
                 }
             }
         }
@@ -1598,7 +1518,7 @@ private fun SessionSummary(
 private fun SummaryRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Text(label, modifier = Modifier.weight(1f), color = Tac.TextLo, fontSize = 12.sp)
-        Text(value, color = Tac.TextHi, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = Mono)
+        Text(value, color = Tac.TextHi, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = UiFont)
     }
 }
 
@@ -1611,7 +1531,7 @@ private fun AliveRow(label: String, packages: List<String>?) {
     }
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Text(label, color = Tac.TextLo, fontSize = 12.sp)
-        packages.forEach { Text(it, color = Tac.TextHi, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = Mono) }
+        packages.forEach { Text(it, color = Tac.TextHi, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = UiFont) }
     }
 }
 
@@ -1629,8 +1549,8 @@ private fun SectionHeader(title: String, expanded: Boolean, onToggle: () -> Unit
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(title, modifier = Modifier.weight(1f), color = Tac.TextLo, fontSize = 10.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Black)
-        Text(if (expanded) "HIDE" else "SHOW", color = Tac.Cyan, fontSize = 10.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+        Text(title, modifier = Modifier.weight(1f), color = Tac.TextLo, fontSize = 10.sp, letterSpacing = LabelTracking, fontWeight = FontWeight.Black)
+        Text(if (expanded) "HIDE" else "SHOW", color = Tac.Cyan, fontSize = 10.sp, fontWeight = FontWeight.Black, fontFamily = UiFont)
     }
 }
 
@@ -1651,7 +1571,7 @@ private fun DiagnosticsSection(ui: DiagnosticsUi, onRun: () -> Unit, report: () 
     var expanded by rememberSaveable { mutableStateOf(false) }
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         color = Tac.Surface,
         border = BorderStroke(1.dp, Tac.Line)
     ) {
@@ -1683,17 +1603,17 @@ private fun DiagnosticsSection(ui: DiagnosticsUi, onRun: () -> Unit, report: () 
                                 color = statusColor(row.status),
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Black,
-                                fontFamily = Mono
+                                fontFamily = UiFont
                             )
                         }
-                        Text(row.evidence, color = Tac.TextLo, fontSize = 11.sp, lineHeight = 15.sp, fontFamily = Mono)
+                        Text(row.evidence, color = Tac.TextLo, fontSize = 11.sp, lineHeight = 15.sp, fontFamily = UiFont)
                     }
                 }
-                ui.checkedAt?.let { Text("Checked $it", color = Tac.TextLo, fontSize = 10.sp, fontFamily = Mono) }
+                ui.checkedAt?.let { Text("Checked $it", color = Tac.TextLo, fontSize = 10.sp, fontFamily = UiFont) }
             }
             Row {
                 TextButton(onClick = onRun, enabled = !ui.running, contentPadding = PaddingValues(horizontal = 0.dp)) {
-                    Text(if (ui.running) "CHECKING" else "RE-CHECK", color = if (ui.running) Tac.TextLo else Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                    Text(if (ui.running) "CHECKING" else "RE-CHECK", color = if (ui.running) Tac.TextLo else Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
                 }
                 Spacer(Modifier.width(16.dp))
                 TextButton(
@@ -1709,7 +1629,7 @@ private fun DiagnosticsSection(ui: DiagnosticsUi, onRun: () -> Unit, report: () 
                     enabled = rows != null,
                     contentPadding = PaddingValues(horizontal = 0.dp)
                 ) {
-                    Text("COPY REPORT", color = if (rows != null) Tac.Cyan else Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = Mono)
+                    Text("COPY REPORT", color = if (rows != null) Tac.Cyan else Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
                 }
             }
         }
@@ -1737,7 +1657,7 @@ private fun SessionComparisonSection(
     var pickB by rememberSaveable { mutableStateOf<String?>(null) }
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         color = Tac.Surface,
         border = BorderStroke(1.dp, Tac.Line)
     ) {
@@ -1795,7 +1715,7 @@ private fun GroupPicker(name: String, groups: List<GroupStats>, picked: GroupSta
             "${if (selected) "\u25CF" else "\u25CB"} ${group.key.label} (${group.runs} ${if (group.runs == 1) "run" else "runs"})",
             color = if (selected) Tac.Cyan else Tac.TextLo,
             fontSize = 11.sp,
-            fontFamily = Mono,
+            fontFamily = UiFont,
             modifier = Modifier
                 .fillMaxWidth()
                 .selectable(selected = selected, role = Role.RadioButton, onClick = { onPick(group) })
@@ -1837,15 +1757,15 @@ private fun ComparisonTable(a: GroupStats, b: GroupStats) {
     )
     Row(Modifier.fillMaxWidth()) {
         listOf("" to 1.3f, "A" to 1f, "B" to 1f, "B\u2212A" to 0.8f).forEach { (title, weight) ->
-            Text(title, modifier = Modifier.weight(weight), color = Tac.TextLo, fontSize = 10.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
+            Text(title, modifier = Modifier.weight(weight), color = Tac.TextLo, fontSize = 10.sp, fontWeight = FontWeight.Black, fontFamily = UiFont)
         }
     }
     rows.forEach { (values, delta) ->
         Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
             Text(values.first, modifier = Modifier.weight(1.3f).padding(end = 8.dp), color = Tac.TextLo, fontSize = 11.sp, lineHeight = 15.sp)
-            Text(values.second, modifier = Modifier.weight(1f), color = Tac.TextHi, fontSize = 11.sp, fontFamily = Mono, lineHeight = 15.sp)
-            Text(values.third, modifier = Modifier.weight(1f), color = Tac.TextHi, fontSize = 11.sp, fontFamily = Mono, lineHeight = 15.sp)
-            Text(delta ?: "", modifier = Modifier.weight(0.8f), color = Tac.Cyan, fontSize = 11.sp, fontFamily = Mono, lineHeight = 15.sp)
+            Text(values.second, modifier = Modifier.weight(1f), color = Tac.TextHi, fontSize = 11.sp, fontFamily = UiFont, lineHeight = 15.sp)
+            Text(values.third, modifier = Modifier.weight(1f), color = Tac.TextHi, fontSize = 11.sp, fontFamily = UiFont, lineHeight = 15.sp)
+            Text(delta ?: "", modifier = Modifier.weight(0.8f), color = Tac.Cyan, fontSize = 11.sp, fontFamily = UiFont, lineHeight = 15.sp)
         }
     }
     if (short.isNotEmpty()) {
@@ -1880,7 +1800,7 @@ private fun MeasureButton(enabled: Boolean, onClick: () -> Unit) {
             color = if (enabled) Tac.Cyan else Tac.TextLo.copy(alpha = 0.4f),
             fontWeight = FontWeight.Black,
             letterSpacing = 2.sp,
-            fontFamily = Mono
+            fontFamily = UiFont
         )
     }
 }
@@ -1905,7 +1825,7 @@ private fun RestoreButton(enabled: Boolean, onClick: () -> Unit) {
             color = if (enabled) Tac.TextLo else Tac.TextLo.copy(alpha = 0.4f),
             fontWeight = FontWeight.Black,
             letterSpacing = 2.sp,
-            fontFamily = Mono
+            fontFamily = UiFont
         )
     }
 }
@@ -1915,57 +1835,79 @@ private fun Header() {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             "TURBO",
-            color = Tac.Cyan,
-            style = MaterialTheme.typography.displaySmall.copy(
-                fontFamily = Mono,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 12.sp
+            color = Tac.Accent,
+            style = MaterialTheme.typography.headlineMedium.copy(
+                fontFamily = UiFont,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 6.sp
             )
         )
-        Text(
-            "ENGINEERING DASHBOARD",
-            color = Tac.TextLo,
-            fontFamily = Mono,
-            fontSize = 9.sp,
-            letterSpacing = 5.sp
-        )
+        SectionLabel("ENGINEERING DASHBOARD")
     }
 }
 
+/** Thermal state as a chip; null is "N/A", never a guessed level. */
 @Composable
-private fun TelemetryDashboard(ram: RamInfo?, reachabilityMs: Int, hz: Int?) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        TelemetryCard(
-            label = "MEMORY",
-            value = ram?.used ?: "--",
-            subValue = ram?.total ?: "READING",
-            progress = ram?.fraction ?: 0f,
-            modifier = Modifier.weight(1.1f)
-        )
+private fun ThermalPill(status: Int?) {
+    val color = when {
+        status == null -> Tac.TextLo
+        status <= 1 -> Tac.Ok
+        status == 2 -> Tac.Warn
+        else -> Tac.Danger
+    }
+    val word = status?.let { THERMAL_NAMES.getOrElse(it) { "unknown" }.uppercase(Locale.US) } ?: "N/A"
+    StatusPill("THERMAL $word", color)
+}
+
+/**
+ * CPU, GPU, RAM and FPS as large tiles. A figure that has no source reads "N/A"; REACH and
+ * DISPLAY stay below as smaller cards.
+ */
+@Composable
+private fun TelemetryDashboard(
+    ram: RamInfo?,
+    reachabilityMs: Int,
+    hz: Int?,
+    cpuPercent: Int?,
+    gpuPercent: Int?,
+    fps: Int?,
+    thermalStatus: Int?
+) {
+    val tile = Modifier.fillMaxHeight()
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        ThermalPill(thermalStatus)
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            StatTile("CPU", cpuPercent?.toString(), tile.weight(1f), unit = "%")
+            StatTile("GPU", gpuPercent?.toString(), tile.weight(1f), unit = "%")
+        }
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            val used = ram?.used?.takeIf { it != "--" }
+            StatTile("RAM", used, tile.weight(1f), unit = ram?.total?.let { "of $it" }, progress = ram?.fraction)
+            StatTile("FPS", fps?.toString(), tile.weight(1f))
+        }
         val reachColor = when {
             reachabilityMs < 0 -> Tac.TextLo
             reachabilityMs < 50 -> Tac.Green
             reachabilityMs < 100 -> Tac.Amber
             else -> Tac.Red
         }
-        // Not a ping: this is round-trip reachability to a DNS host, measured outside the
-        // tunnel, so it is labelled for what it is (L3).
-        TelemetryCard(
-            label = "REACH",
-            value = if (reachabilityMs >= 0) "$reachabilityMs" else "--",
-            subValue = "MS TO DNS",
-            statusColor = reachColor,
-            modifier = Modifier.weight(0.9f)
-        )
-        TelemetryCard(
-            label = "DISPLAY",
-            value = hz?.toString() ?: "--",
-            subValue = "HZ RATE",
-            modifier = Modifier.weight(0.9f)
-        )
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Not a ping: this is round-trip reachability to a DNS host, measured outside the
+            // tunnel, so it is labelled for what it is (L3).
+            TelemetryCard(
+                label = "REACH",
+                value = if (reachabilityMs >= 0) "$reachabilityMs" else "--",
+                subValue = "MS TO DNS",
+                statusColor = reachColor,
+                modifier = tile.weight(1f)
+            )
+            TelemetryCard(
+                label = "DISPLAY",
+                value = hz?.toString() ?: "--",
+                subValue = "HZ RATE",
+                modifier = tile.weight(1f)
+            )
+        }
     }
 }
 
@@ -1975,42 +1917,22 @@ private fun TelemetryCard(
     value: String,
     subValue: String,
     modifier: Modifier = Modifier,
-    progress: Float? = null,
-    statusColor: Color = Tac.Cyan
+    statusColor: Color = Tac.Accent
 ) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(14.dp),
-        color = Tac.Surface,
-        border = BorderStroke(1.dp, Tac.Line)
-    ) {
-        Column(Modifier.padding(12.dp)) {
-            Text(label, color = Tac.TextLo, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(value, color = Tac.TextHi, fontSize = 22.sp, fontWeight = FontWeight.Black, fontFamily = Mono)
-                if (progress == null) {
-                    Spacer(Modifier.width(6.dp))
-                    Box(Modifier.size(6.dp).background(statusColor, CircleShape).align(Alignment.CenterVertically))
-                }
-            }
-            Text(subValue, color = Tac.TextLo, fontSize = 9.sp, fontWeight = FontWeight.Medium)
-            
-            if (progress != null) {
-                Spacer(Modifier.height(10.dp))
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape),
-                    color = statusColor,
-                    trackColor = Tac.Line
-                )
-            }
+    SectionCard(modifier) {
+        SectionLabel(label)
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(value, color = Tac.TextHi, fontSize = 22.sp, fontWeight = FontWeight.Bold, fontFamily = UiFont)
+            Spacer(Modifier.width(6.dp))
+            Box(Modifier.size(6.dp).background(statusColor, CircleShape))
         }
+        Text(subValue, color = Tac.TextLo, fontSize = 10.sp, letterSpacing = LabelTracking, fontWeight = FontWeight.Medium)
     }
 }
 
 @Composable
-private fun BoostButton(step: BoostStep, accent: Color, gameName: String?, onClick: () -> Unit) {
+private fun BoostButton(step: BoostStep, accent: Color, gameName: String?, onClick: () -> Unit, diameter: Dp = 250.dp) {
     val busy = step != BoostStep.IDLE
     val canBoost = !busy && gameName != null
     val launchLabel = if (gameName != null) "Boost and launch $gameName" else "Pick a game to boost"
@@ -2028,7 +1950,7 @@ private fun BoostButton(step: BoostStep, accent: Color, gameName: String?, onCli
 
     Box(
         Modifier
-            .size(250.dp)
+            .size(diameter)
             .scale(scale)
             .alpha(if (busy || canBoost) 1f else 0.45f)
             .clickable(
@@ -2086,13 +2008,13 @@ private fun BoostButton(step: BoostStep, accent: Color, gameName: String?, onCli
 
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             if (busy) {
-                Text(step.label, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 14.sp, letterSpacing = 2.sp)
+                Text(step.label, color = accent, fontFamily = UiFont, fontWeight = FontWeight.Bold, fontSize = 14.sp, letterSpacing = 2.sp)
             } else {
-                Text("BOOST", color = Tac.TextHi, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = 38.sp, letterSpacing = 2.sp)
+                Text("BOOST", color = Tac.TextHi, fontFamily = UiFont, fontWeight = FontWeight.Black, fontSize = 38.sp, letterSpacing = 2.sp)
                 Text(
                     if (gameName != null) "& PLAY" else "PICK A GAME",
                     color = accent,
-                    fontFamily = Mono,
+                    fontFamily = UiFont,
                     fontSize = 13.sp,
                     letterSpacing = 5.sp
                 )
@@ -2131,17 +2053,17 @@ private fun InteractiveStatusCard(
     // nothing (L5). The DISCONNECT button below is the only real control here.
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         color = Tac.Surface,
         border = BorderStroke(1.dp, Tac.Line)
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text(label, color = Tac.TextLo, fontSize = 10.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Black)
+            Text(label, color = Tac.TextLo, fontSize = 10.sp, letterSpacing = LabelTracking, fontWeight = FontWeight.Black)
             Spacer(Modifier.height(14.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 StatusIndicator(color)
                 Spacer(Modifier.width(10.dp))
-                Text(title, color = color, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = Mono)
+                Text(title, color = color, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = UiFont)
             }
             Spacer(Modifier.height(4.dp))
             Text(detail, color = Tac.TextLo, fontSize = 11.sp, lineHeight = 16.sp)

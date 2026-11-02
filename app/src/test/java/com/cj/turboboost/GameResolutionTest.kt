@@ -107,8 +107,8 @@ private class GameShell(
 
 class GameResolutionTest {
 
-    private val uncapped = "com.mobile.legends"
-    private val capped = "com.garena.game.codm"
+    private val uncapped = "com.example.uncapped"
+    private val capped = "com.example.capped"
 
     // --- preset value mapping -----------------------------------------------------------
 
@@ -423,10 +423,10 @@ class GameResolutionTest {
     }
 
     private val sfLines = """
-        + name:cda85c6 SurfaceView[com.mobile.legends/com.moba.unityplugin.MobaGameUnityActivity]#1(BLAST Consumer)1, id:9199820124371, size:6127.00KiB, w/h:810x1845, usage: 0x40000000000b00, req fmt:2
-        + name:cda85c6 SurfaceView[com.mobile.legends/com.moba.unityplugin.MobaGameUnityActivity]#1(BLAST Consumer)1, id:9199820124370, size:6127.00KiB, w/h:810x1845, usage: 0x40000000000b00, req fmt:2
-        + name:8597e53 com.mobile.legends/com.moba.unityplugin.MobaGameUnityActivity#68464(BLAST Consumer)68464, id:91998, size:10378.00KiB, w/h:1080x2460, usage: 0xb00, req fmt:1
-        + name:aa11 SurfaceView[com.mobile.legends.helper/x.Y]#1(BLAST Consumer)1, id:1, size:1.00KiB, w/h:100x100, usage: 0xb00, req fmt:1
+        + name:cda85c6 SurfaceView[com.example.uncapped/com.example.engine.MainActivity]#1(BLAST Consumer)1, id:9199820124371, size:6127.00KiB, w/h:810x1845, usage: 0x40000000000b00, req fmt:2
+        + name:cda85c6 SurfaceView[com.example.uncapped/com.example.engine.MainActivity]#1(BLAST Consumer)1, id:9199820124370, size:6127.00KiB, w/h:810x1845, usage: 0x40000000000b00, req fmt:2
+        + name:8597e53 com.example.uncapped/com.example.engine.MainActivity#68464(BLAST Consumer)68464, id:91998, size:10378.00KiB, w/h:1080x2460, usage: 0xb00, req fmt:1
+        + name:aa11 SurfaceView[com.example.uncapped.helper/x.Y]#1(BLAST Consumer)1, id:1, size:1.00KiB, w/h:100x100, usage: 0xb00, req fmt:1
     """.trimIndent()
 
     @Test
