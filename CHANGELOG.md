@@ -7,13 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-11-02
+
 ### Added
+- THERMAL FPS CAP on each game's card, under the render resolution: OFF, 45, 40 or 30 FPS through Android's game mode (Android 14 and later). It asks first, like the resolution options, and takes effect the next time the game opens. It can only lower the frame rate, never raise it above the game's own setting, and a game may ignore it.
+- The cap and the render resolution are written together, so changing one keeps the other. A cap is shown as set only when Android reads it back. The card then shows the average FPS of the last session played at that cap, or "Not measured yet", and notes that the read-back alone does not prove the game follows it.
+- The cap is part of the snapshot and restore the resolution already uses: DEFAULT with the cap OFF puts back the mode and settings the game had before, including a frame-rate setting of its own. A cap changed outside the app is reported and only overwritten if you confirm. After a phone restart, Turbo sets the cap again with the resolution when it launches the game.
+- Each session now records the cap it ran under. Sessions saved by earlier versions still load, with no cap.
+- A Diagnostics section, read-only: Android version, device, Shizuku, whether `cmd game` works for the selected game, its current mode and config, the resolution and FPS cap levers, thermal status, and the apps whose standby bucket change was ignored. Each row says Supported, Unsupported, Unverified or Not checked, with one line of evidence. Supported needs a read-back. The FPS cap is Supported only when a session at the cap averaged 0.85 to 1.1 times the cap and a session of the same game at the same resolution without a cap averaged at least 1.2 times the cap; the row shows both averages. It checks only when opened or on RE-CHECK, and COPY REPORT copies it as plain text.
+- A Session comparison section, read-only: pick two groups of the selected game's saved sessions, grouped by refresh rate, render resolution and FPS cap, and compare run count, median average FPS, median 1% low, median time to thermal status 1 (and how many runs never reached it) and the worst thermal status. A difference shows only when both groups have at least 3 runs. Only the newest 20 sessions are kept.
 - MEASURE ONLY, under BOOST: launches the selected game and records a session without changing anything (no background restriction, RAM purge, profile, refresh rate, stabilizer or preset), as a baseline to compare boosts with. It refuses to start while a boost's changes, a resolution preset or FPS cap, the stabilizer or another session are still on.
 - Each session records whether it was a baseline or which profile it ran under, the game's Game Manager mode and configs at its start and end, and how much of it was sampled.
 - Each session checks whether another app changed the game's mode or configs since this app last saw them, at its start and its end. A mode reset by a phone restart is expected; a changed config is not. With nothing to compare with, it says unknown.
 - The Session comparison groups sessions by profile and the game's mode and configs too, so baselines and boosts never share a group. It leaves out sessions another app changed, sessions whose game restarted, and baselines that ran with a Game Manager config, and says how many it left out.
 
 ### Changed
+- If the app is closed in the middle of a resolution or cap change, the next start finishes recording it when the game holds what was asked, or reports the game's mode as changed outside Turbo with RESTORE ANYWAY.
 - Diagnostics and the lower-rate suggestion ignore baselines.
 - The profile's game mode (battery, standard or performance) is now saved before a boost switches it and put back when the session ends, on RESTORE, or at the next app start. Before, it was never put back: a BALANCED boost took a game out of a custom mode another app had set, and left it there. It is put back only while the game still holds the mode the boost set; one changed since, by another app or a phone restart, is left as it is. A mode the game doesn't offer is no longer sent.
 - Do Not Disturb, the animation scales, pointer speed and auto-sync are now put back when the game closes and at the next app start, not only by RESTORE NORMAL SETTINGS. Each is put back only while it still holds the value the boost set, and read back; one you changed during the game is left as you set it. RESTORE still puts everything back as before.
@@ -25,19 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A session, boosted or baseline, starts once the game is the app in front, not when a process of it is found running in the background.
 - Gaps of 1 s or more between two frames are pauses (loading, menus) and are left out of average FPS and 1% low; the summary shows how many there were and how long they lasted in all. Before, one loading screen counted as one long frame and took a session's 1% low to about 2 FPS.
 - Each session keeps its frames per second for up to 30 minutes, with seconds the reads missed left empty rather than 0, and up to 100 pauses with their times. It also records the battery temperature at its start and end.
-
-## [1.2.4] - 2026-10-23
-
-### Added
-- THERMAL FPS CAP on each game's card, under the render resolution: OFF, 45, 40 or 30 FPS through Android's game mode (Android 14 and later). It asks first, like the resolution options, and takes effect the next time the game opens. It can only lower the frame rate, never raise it above the game's own setting, and a game may ignore it.
-- The cap and the render resolution are written together, so changing one keeps the other. A cap is shown as set only when Android reads it back. The card then shows the average FPS of the last session played at that cap, or "Not measured yet", and notes that the read-back alone does not prove the game follows it.
-- The cap is part of the snapshot and restore the resolution already uses: DEFAULT with the cap OFF puts back the mode and settings the game had before, including a frame-rate setting of its own. A cap changed outside the app is reported and only overwritten if you confirm. After a phone restart, Turbo sets the cap again with the resolution when it launches the game.
-- Each session now records the cap it ran under. Sessions saved by earlier versions still load, with no cap.
-- A Diagnostics section, read-only: Android version, device, Shizuku, whether `cmd game` works for the selected game, its current mode and config, the resolution and FPS cap levers, thermal status, and the apps whose standby bucket change was ignored. Each row says Supported, Unsupported, Unverified or Not checked, with one line of evidence. Supported needs a read-back. The FPS cap is Supported only when a session at the cap averaged 0.85 to 1.1 times the cap and a session of the same game at the same resolution without a cap averaged at least 1.2 times the cap; the row shows both averages. It checks only when opened or on RE-CHECK, and COPY REPORT copies it as plain text.
-- A Session comparison section, read-only: pick two groups of the selected game's saved sessions, grouped by refresh rate, render resolution and FPS cap, and compare run count, median average FPS, median 1% low, median time to thermal status 1 (and how many runs never reached it) and the worst thermal status. A difference shows only when both groups have at least 3 runs. Only the newest 20 sessions are kept.
-
-### Changed
-- If the app is closed in the middle of a resolution or cap change, the next start finishes recording it when the game holds what was asked, or reports the game's mode as changed outside Turbo with RESTORE ANYWAY.
 
 ## [1.2.3] - 2026-10-18
 
