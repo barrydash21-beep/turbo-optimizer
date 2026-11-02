@@ -62,6 +62,7 @@ import com.cj.turboboost.GameRegistry
 import com.cj.turboboost.GameStateRef
 import com.cj.turboboost.GameResolutionUi
 import com.cj.turboboost.GroupStats
+import com.cj.turboboost.HeavyAppsUi
 import com.cj.turboboost.InstalledGame
 import com.cj.turboboost.LaunchableApp
 import com.cj.turboboost.RamInfo
@@ -145,7 +146,12 @@ fun BoosterScreen(
     onRunDiagnostics: () -> Unit,
     diagnosticsReport: () -> String?,
     comparisonSessions: List<SessionRecord>?,
-    onLoadComparison: () -> Unit
+    onLoadComparison: () -> Unit,
+    heavyApps: HeavyAppsUi,
+    onRefreshHeavyApps: () -> Unit,
+    onStopHeavyApp: (String) -> Unit,
+    onRestrictHeavyApp: (String) -> Unit,
+    onClearRam: () -> Unit
 ) {
     val context = LocalContext.current
     val busy = step != BoostStep.IDLE
@@ -238,6 +244,20 @@ fun BoosterScreen(
             onOpen = onLoadComparison
         )
     }
+    // One read when Shizuku becomes ready, then only when the user asks.
+    LaunchedEffect(shizuku) { if (shizuku == ShizukuState.READY) onRefreshHeavyApps() }
+    val heavySection: @Composable () -> Unit = {
+        HeavyAppsCard(
+            ui = heavyApps,
+            ram = deviceStats?.first,
+            shizukuReady = shizuku == ShizukuState.READY,
+            enabled = !busy,
+            onRefresh = onRefreshHeavyApps,
+            onStop = onStopHeavyApp,
+            onRestrict = onRestrictHeavyApp,
+            onClearRam = onClearRam
+        )
+    }
     val statTiles: @Composable () -> Unit = {
         TelemetryDashboard(
             ram = deviceStats?.first,
@@ -295,6 +315,7 @@ fun BoosterScreen(
                             RailTab.OVERVIEW -> {
                                 statTiles()
                                 statusCards()
+                                heavySection()
                             }
                             RailTab.OPTIONS -> optionsSection()
                             RailTab.REPORTS -> {
@@ -321,6 +342,7 @@ fun BoosterScreen(
                     StepTracker(current = step, includeStabilizing = vpnEnabled)
                     optionsSection()
                     statusCards()
+                    heavySection()
                     restore()
                     diagnosticsSection()
                     comparisonSection()

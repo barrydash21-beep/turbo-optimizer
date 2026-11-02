@@ -71,6 +71,9 @@ data class KillResult(
     val ok: Boolean get() = !unavailable && (failed.isEmpty() || stopped > 0)
 }
 
+/** What stopping one app did. */
+enum class StopOutcome { STOPPED, FAILED, REFUSED, UNAVAILABLE }
+
 object RamCleaner {
 
     /**
@@ -133,11 +136,27 @@ object RamCleaner {
         val failed = mutableListOf<String>()
         var stopped = 0
         for (pkg in toStop) {
-            if (runShizukuCommand("am force-stop $pkg").ok) stopped++ else failed += pkg
+            if (forceStop(pkg)) stopped++ else failed += pkg
         }
         // Final sweep of cached background processes; its outcome does not change the count.
         runShizukuCommand("am kill-all")
         return KillResult(stopped = stopped, failed = failed, usedFallback = usedFallback)
+    }
+
+    private fun forceStop(pkg: String): Boolean = runShizukuCommand("am force-stop $pkg").ok
+
+    /**
+     * Force-stops one app picked from the heavy-apps list, through the same command as the
+     * purge. Protection is worked out again here, since the list may be stale: the protected
+     * set, [selectedGame] and the user's [games] are refused, and so is everything when the
+     * launcher or keyboard cannot be resolved.
+     */
+    fun stopApp(pkg: String, selectedGame: String?, games: Set<String>): StopOutcome {
+        if (!shell.isAvailable()) return StopOutcome.UNAVAILABLE
+        if (!GameRegistry.isValidPackageName(pkg) || pkg in games) return StopOutcome.REFUSED
+        val protected = protectedPackages(shell, selectedGame) ?: return StopOutcome.REFUSED
+        if (AppPackages.isProtected(pkg, protected)) return StopOutcome.REFUSED
+        return if (forceStop(pkg)) StopOutcome.STOPPED else StopOutcome.FAILED
     }
 
     /** The packages to stop, or null when the runtime list cannot be built safely. */

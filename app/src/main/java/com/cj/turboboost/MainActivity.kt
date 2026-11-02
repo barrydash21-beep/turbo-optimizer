@@ -169,7 +169,12 @@ class MainActivity : ComponentActivity() {
                     onRunDiagnostics = { viewModel.runDiagnostics() },
                     diagnosticsReport = { viewModel.diagnosticsReport() },
                     comparisonSessions = viewModel.comparisonSessions,
-                    onLoadComparison = { viewModel.loadComparison() }
+                    onLoadComparison = { viewModel.loadComparison() },
+                    heavyApps = viewModel.heavyApps,
+                    onRefreshHeavyApps = { viewModel.refreshHeavyApps() },
+                    onStopHeavyApp = { viewModel.stopHeavyApp(it) },
+                    onRestrictHeavyApp = { viewModel.restrictHeavyApp(it) },
+                    onClearRam = { viewModel.clearRam() }
                 )
             }
         }

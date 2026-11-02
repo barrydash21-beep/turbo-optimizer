@@ -468,6 +468,105 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // -----------------------------------------------------------------------
+    // Heavy background apps
+    // -----------------------------------------------------------------------
+
+    /** The heavy-apps card. Read when asked for, never on a timer. */
+    var heavyApps by mutableStateOf(HeavyAppsUi())
+        private set
+
+    /** Reads the running third-party apps again. */
+    fun refreshHeavyApps() {
+        if (heavyApps.loading) return
+        heavyApps = heavyApps.copy(loading = true)
+        val game = selectedGame
+        val gamePackages = prefs.games.toSet()
+        viewModelScope.launch {
+            val loaded = withContext(Dispatchers.IO) { HeavyApps.load(RamCleaner.shell, game, gamePackages) }
+            heavyApps = loaded
+        }
+    }
+
+    /** Force-stops one listed app, through the same command as the RAM purge. */
+    fun stopHeavyApp(pkg: String) {
+        if (step != BoostStep.IDLE) return
+        val game = selectedGame
+        val gamePackages = prefs.games.toSet()
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) { RamCleaner.stopApp(pkg, game, gamePackages) }
+            val name = appName(pkg)
+            _events.send(
+                BoostEvent.ShowToast(
+                    when (outcome) {
+                        StopOutcome.STOPPED -> "Stopped $name. It stays stopped until you open it"
+                        StopOutcome.FAILED -> "Could not stop $name"
+                        StopOutcome.REFUSED -> "$name is protected and was left alone"
+                        StopOutcome.UNAVAILABLE -> "Shizuku not connected"
+                    }
+                )
+            )
+            refreshHeavyApps()
+        }
+    }
+
+    /** Adds one listed app to the background restriction list, unless it is protected or not installed. */
+    fun restrictHeavyApp(pkg: String) {
+        val game = selectedGame
+        viewModelScope.launch {
+            val checked = withContext(Dispatchers.IO) {
+                val shell = RamCleaner.shell
+                if (!shell.isAvailable()) {
+                    null
+                } else {
+                    RamCleaner.parsePackageList(shell.capture("pm list packages")) to
+                        RamCleaner.protectedPackages(shell, game)
+                }
+            }
+            val installed = checked?.first
+            val protected = checked?.second
+            val name = appName(pkg)
+            val message = when {
+                !GameRegistry.isValidPackageName(pkg) -> "$name is not a package name"
+                installed == null || protected == null -> "Connect Shizuku to restrict apps"
+                AppPackages.isProtected(pkg, protected) -> "$name is protected and is never restricted"
+                pkg !in installed -> "$name is not installed"
+                else -> {
+                    saveRestricted(
+                        HeavyApps.restrictedWith(restrictList, BackgroundRestrictor.defaultsFor(installed, protected), pkg)
+                    )
+                    if (restrictEnabled) {
+                        "$name added to the restriction list"
+                    } else {
+                        "$name added to the restriction list. Restriction is off in Options"
+                    }
+                }
+            }
+            _events.send(BoostEvent.ShowToast(message))
+        }
+    }
+
+    /** The purge a boost runs, on its own: every running third-party app except the protected ones. */
+    fun clearRam() {
+        if (step != BoostStep.IDLE) return
+        val game = selectedGame
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { RamCleaner.killBackgroundApps(game.orEmpty()) }
+            _events.send(
+                BoostEvent.ShowToast(
+                    when {
+                        result.unavailable -> "Shizuku not connected"
+                        result.failed.isEmpty() -> "Stopped ${result.stopped} apps"
+                        else -> "Stopped ${result.stopped} apps, ${result.failed.size} could not be stopped"
+                    }
+                )
+            )
+            refreshHeavyApps()
+        }
+    }
+
+    private fun appName(pkg: String): String = GameRegistry.labelFor(getApplication(), pkg) ?: pkg
+
+    // -----------------------------------------------------------------------
     // Shizuku
     // -----------------------------------------------------------------------
 
