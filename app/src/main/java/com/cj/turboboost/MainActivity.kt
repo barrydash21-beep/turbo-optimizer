@@ -174,7 +174,11 @@ class MainActivity : ComponentActivity() {
                     onRefreshHeavyApps = { viewModel.refreshHeavyApps() },
                     onStopHeavyApp = { viewModel.stopHeavyApp(it) },
                     onRestrictHeavyApp = { viewModel.restrictHeavyApp(it) },
-                    onClearRam = { viewModel.clearRam() }
+                    onClearRam = { viewModel.clearRam() },
+                    overlayEnabled = viewModel.overlayEnabled,
+                    overlayPermitted = viewModel.overlayPermitted,
+                    onOverlayEnabledChange = { viewModel.turnOverlay(it) },
+                    onGrantOverlay = { viewModel.turnOverlay(true) }
                 )
             }
         }
@@ -196,6 +200,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.refreshShizuku()
+        viewModel.refreshOverlayPermission()
         // A game may have been installed or removed, or a session may have ended, while away.
         viewModel.refreshGames()
         viewModel.checkSummary()
@@ -213,6 +218,17 @@ class MainActivity : ComponentActivity() {
             is BoostEvent.ShowToast -> toast(event.message)
             BoostEvent.RequestShizukuPermission -> requestShizukuPermission()
             BoostEvent.RequestVpnConsent -> requestVpnConsent()
+            BoostEvent.RequestOverlayPermission -> requestOverlayPermission()
+        }
+    }
+
+    /** Opens this app's "Display over other apps" screen; the user grants it there, and only there. */
+    private fun requestOverlayPermission() {
+        try {
+            startActivity(FloatingOverlayService.permissionIntent(this))
+        } catch (e: Exception) {
+            Log.w(TAG, "Overlay permission screen could not open", e)
+            toast("Open Settings, Apps, Special access, Display over other apps, and allow Turbo")
         }
     }
 

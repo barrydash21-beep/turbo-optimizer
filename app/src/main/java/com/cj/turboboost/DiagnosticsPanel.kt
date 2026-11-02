@@ -54,6 +54,10 @@ data class DiagnosticsInput(
      */
     val uncappedSession: SessionRecord? = null,
     val thermalDump: String?,
+    /** The first line of `/proc/stat` as the overlay would read it, or null when neither the app nor Shizuku could. */
+    val cpuStat: String? = null,
+    /** Who read [cpuStat]: "the app" or "Shizuku". */
+    val cpuStatVia: String? = null,
     /** Per restricted package, what the system ignored in this app run's last restriction; null when none ran. */
     val restrictIgnored: Map<String, List<String>>?
 )
@@ -111,7 +115,8 @@ object DiagnosticsPanel {
         downscaleRow(input),
         fpsCapRow(input),
         thermalRow(input),
-        restrictionRow(input)
+        restrictionRow(input),
+        cpuRow(input)
     )
 
     private fun androidRow(input: DiagnosticsInput) = DiagnosticRow(
@@ -238,6 +243,21 @@ object DiagnosticsPanel {
             Diagnostics.thermalOverridden(dump) -> DiagnosticRow(name, CheckStatus.UNVERIFIED, "A status override is active, so the value is forced")
             status != null -> DiagnosticRow(name, CheckStatus.SUPPORTED, "Thermal Status: $status")
             else -> DiagnosticRow(name, CheckStatus.UNSUPPORTED, "No \"Thermal Status\" line: ${excerpt(dump)}")
+        }
+    }
+
+    /** Whether the overlay can show a CPU figure: `/proc/stat` must be readable and parse. */
+    private fun cpuRow(input: DiagnosticsInput): DiagnosticRow {
+        val name = "Overlay CPU reading"
+        return if (CpuUsage.parse(input.cpuStat) != null) {
+            DiagnosticRow(name, CheckStatus.SUPPORTED, "/proc/stat read by ${input.cpuStatVia ?: "the app"}, cpu line parsed")
+        } else {
+            val why = if (!input.shellReady) {
+                "not readable by the app, and Shizuku is not connected"
+            } else {
+                "unreadable or not a cpu line: ${excerpt(input.cpuStat)}"
+            }
+            DiagnosticRow(name, CheckStatus.UNSUPPORTED, "/proc/stat $why; the overlay shows N/A")
         }
     }
 

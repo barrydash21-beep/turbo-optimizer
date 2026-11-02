@@ -509,6 +509,9 @@ class SessionSampler(private val shell: ShellExecutor, private val packageName: 
         return Sample(thermal, frames.size, peak)
     }
 
+    /** The game's frames presented after [afterNs], without touching a session: for the overlay's own poll. */
+    fun framesAfter(afterNs: Long): List<Long> = readFrames(afterNs)
+
     private fun readFrames(afterNs: Long): List<Long> {
         layer?.let { cached ->
             val frames = latency(cached, afterNs)

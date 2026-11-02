@@ -104,6 +104,11 @@ class BoosterPrefs(private val store: KeyValueStore) {
             value?.filter { GameRegistry.isValidPackageName(it) }?.distinct()?.joinToString(",")
         )
 
+    /** Whether a session shows the FPS, CPU and RAM overlay. Off until the user turns it on. */
+    var overlayEnabled: Boolean
+        get() = store.getBoolean(KEY_OVERLAY, false)
+        set(value) = store.putBoolean(KEY_OVERLAY, value)
+
     /** Package of the game the user picked, or null before the first pick. */
     var selectedGame: String?
         get() = store.getString(KEY_GAME)
@@ -123,6 +128,7 @@ class BoosterPrefs(private val store: KeyValueStore) {
         const val KEY_GAMES = "games"
         const val KEY_RESTRICT = "restrict_background"
         const val KEY_RESTRICT_LIST = "restricted_apps"
+        const val KEY_OVERLAY = "overlay_enabled"
         const val PREFIX_RATE = "rate_"
     }
 }

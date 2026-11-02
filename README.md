@@ -78,6 +78,7 @@ Every permission declared in Turbo Optimizer serves a specific, transparent func
 | `WRITE_SYNC_SETTINGS` | Temporarily pauses and restores account auto-synchronization during intensive sessions. |
 | `POST_NOTIFICATIONS` | Displays persistent foreground service notifications to inform the user that optimization is active. |
 | `FOREGROUND_SERVICE` | Keeps the session monitor and local loopback service active while the target task runs in the foreground. |
+| `SYSTEM_ALERT_WINDOW` | Optional, off by default. Draws a small read-only FPS, CPU and RAM readout over the game while a session runs. Granted by the user in Settings; the readout can only be dragged and sends no input. |
 
 > **Privacy Notice**: Turbo Optimizer does not collect, log, or transmit any personal data, device identifiers, or analytics. Package queries are strictly constrained to applications with launcher intents to populate the app selector.
 

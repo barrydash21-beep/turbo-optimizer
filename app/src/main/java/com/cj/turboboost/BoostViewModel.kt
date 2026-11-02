@@ -33,6 +33,9 @@ sealed interface BoostEvent {
     data class ShowToast(val message: String) : BoostEvent
     data object RequestShizukuPermission : BoostEvent
     data object RequestVpnConsent : BoostEvent
+
+    /** Open the system screen where "Display over other apps" is granted. */
+    data object RequestOverlayPermission : BoostEvent
 }
 
 /** An app the user added as a game that is still installed, with the rates this panel can show. */
@@ -465,6 +468,50 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         val kept = list.distinct()
         restrictList = kept
         prefs.restrictedApps = kept
+    }
+
+    // -----------------------------------------------------------------------
+    // Floating overlay
+    // -----------------------------------------------------------------------
+
+    /** Whether a session shows the FPS, CPU and RAM overlay. Off until the user turns it on. */
+    var overlayEnabled by mutableStateOf(prefs.overlayEnabled)
+        private set
+
+    /** Whether "Display over other apps" is granted; re-read whenever the app comes back to the front. */
+    var overlayPermitted by mutableStateOf(FloatingOverlayService.canDraw(app))
+        private set
+
+    fun refreshOverlayPermission() {
+        val was = overlayPermitted
+        overlayPermitted = FloatingOverlayService.canDraw(getApplication())
+        // Granted while a session runs: show it now rather than at the next one.
+        if (!was && overlayPermitted) showOverlayNowIfWanted()
+    }
+
+    fun turnOverlay(enabled: Boolean) {
+        overlayEnabled = enabled
+        prefs.overlayEnabled = enabled
+        if (!enabled) {
+            FloatingOverlayService.stop(getApplication())
+            return
+        }
+        overlayPermitted = FloatingOverlayService.canDraw(getApplication())
+        if (!overlayPermitted) {
+            viewModelScope.launch { _events.send(BoostEvent.RequestOverlayPermission) }
+            return
+        }
+        showOverlayNowIfWanted()
+    }
+
+    /** A session already running shows the overlay straight away; otherwise the next one does. */
+    private fun showOverlayNowIfWanted() {
+        if (!overlayEnabled || !GameMonitorService.isRunning || FloatingOverlayService.showing.value) return
+        try {
+            FloatingOverlayService.start(getApplication())
+        } catch (e: Exception) {
+            Log.w(TAG, "Overlay service could not start", e)
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1156,6 +1203,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                 it.packageName == pkg && it.fpsCap == null && it.renderResolution == capped.renderResolution && it.avgFps != null
             }
         }
+        val cpu = CpuSampler(shell)
         return DiagnosticsInput(
             androidRelease = Build.VERSION.RELEASE,
             sdk = Build.VERSION.SDK_INT,
@@ -1174,6 +1222,8 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
             capSession = capSession,
             uncappedSession = uncappedSession,
             thermalDump = if (ready) shell.capture("dumpsys thermalservice") else null,
+            cpuStat = cpu.readRaw(),
+            cpuStatVia = cpu.via,
             restrictIgnored = restrictIgnored
         )
     }

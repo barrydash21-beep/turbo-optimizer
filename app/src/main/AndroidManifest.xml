@@ -27,6 +27,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <!-- The optional read-only FPS, CPU and RAM overlay; granted by the user in Settings, off by default -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <!-- Package visibility (Android 11+): Shizuku, the apps below, and launchable apps for the game picker -->
     <queries>
         <!-- Any app with a launcher icon can be added as a game -->
@@ -120,6 +123,19 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Polls whether the user-launched game is still running so display tweaks can be reverted when it exits, and samples its frame rate and thermal status for the session summary" />
+        </service>
+
+        <!--
+            The optional overlay drawn over the game while a session runs. specialUse for the
+            same reason as the services above; it stops with the monitor.
+        -->
+        <service
+            android:name=".FloatingOverlayService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Shows a read-only frame rate, CPU and memory readout over the user-launched game while its session runs, until the game exits" />
         </service>
 
         <!--

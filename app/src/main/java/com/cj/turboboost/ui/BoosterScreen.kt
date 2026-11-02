@@ -151,7 +151,11 @@ fun BoosterScreen(
     onRefreshHeavyApps: () -> Unit,
     onStopHeavyApp: (String) -> Unit,
     onRestrictHeavyApp: (String) -> Unit,
-    onClearRam: () -> Unit
+    onClearRam: () -> Unit,
+    overlayEnabled: Boolean,
+    overlayPermitted: Boolean,
+    onOverlayEnabledChange: (Boolean) -> Unit,
+    onGrantOverlay: () -> Unit
 ) {
     val context = LocalContext.current
     val busy = step != BoostStep.IDLE
@@ -207,11 +211,15 @@ fun BoosterScreen(
             profile = profile,
             vpnEnabled = vpnEnabled,
             restrictEnabled = restrictEnabled,
+            overlayEnabled = overlayEnabled,
+            overlayPermitted = overlayPermitted,
             enabled = !busy,
             onProfileChange = onProfileChange,
             onVpnEnabledChange = onVpnEnabledChange,
             onRestrictEnabledChange = onRestrictEnabledChange,
-            onEditRestricted = onOpenRestrictEditor
+            onEditRestricted = onOpenRestrictEditor,
+            onOverlayEnabledChange = onOverlayEnabledChange,
+            onGrantOverlay = onGrantOverlay
         )
     }
     val statusCards: @Composable () -> Unit = {
@@ -783,11 +791,15 @@ private fun OptionsModule(
     profile: BoostProfile,
     vpnEnabled: Boolean,
     restrictEnabled: Boolean,
+    overlayEnabled: Boolean,
+    overlayPermitted: Boolean,
     enabled: Boolean,
     onProfileChange: (BoostProfile) -> Unit,
     onVpnEnabledChange: (Boolean) -> Unit,
     onRestrictEnabledChange: (Boolean) -> Unit,
-    onEditRestricted: () -> Unit
+    onEditRestricted: () -> Unit,
+    onOverlayEnabledChange: (Boolean) -> Unit,
+    onGrantOverlay: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.5f),
@@ -916,6 +928,53 @@ private fun OptionsModule(
                     checked = restrictEnabled,
                     onCheckedChange = onRestrictEnabledChange,
                     enabled = enabled,
+                    colors = optionSwitchColors()
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            HorizontalDivider(color = Tac.Line, thickness = 1.dp)
+            Spacer(Modifier.height(12.dp))
+
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "OVERLAY",
+                        color = Tac.TextHi,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = UiFont
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        if (overlayEnabled) {
+                            "Shows FPS, CPU and RAM over the game while a session runs. Read-only: drag it to move it."
+                        } else {
+                            "Left off"
+                        },
+                        color = Tac.TextLo,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp
+                    )
+                    if (overlayEnabled && !overlayPermitted) {
+                        Text(
+                            "Needs \"Display over other apps\" before it can show.",
+                            color = Tac.Warn,
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp
+                        )
+                        TextButton(onClick = onGrantOverlay, contentPadding = PaddingValues(0.dp)) {
+                            Text("OPEN SETTINGS", color = Tac.Cyan, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp, fontFamily = UiFont)
+                        }
+                    }
+                }
+                Switch(
+                    modifier = Modifier.semantics { contentDescription = "Show the FPS, CPU and RAM overlay during a session" },
+                    checked = overlayEnabled,
+                    onCheckedChange = onOverlayEnabledChange,
                     colors = optionSwitchColors()
                 )
             }

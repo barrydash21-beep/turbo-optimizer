@@ -22,6 +22,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -86,6 +87,19 @@ class GameMonitorService : Service() {
 
         val isRunning: Boolean get() = _running.value
 
+        /** How often the overlay's FPS is read while frames are coming, and while none are. */
+        const val OVERLAY_MS = 1_000L
+        const val OVERLAY_IDLE_MS = 3_000L
+
+        private val _fps = MutableStateFlow<Int?>(null)
+
+        /**
+         * The game's frame rate, rounded, from the overlay's poll; null while no FPS can be
+         * called (menus, loading) and whenever the overlay is not up. Nothing reads SurfaceFlinger
+         * for it unless [FloatingOverlayService.showing]. [FloatingOverlayService] collects it.
+         */
+        val fpsFlow: StateFlow<Int?> = _fps.asStateFlow()
+
         /**
          * Starts monitoring a session of [gamePackage]. [kind] is the profile's name or
          * [SessionRecord.BASELINE]; a baseline holds nothing to restore and is monitored anyway.
@@ -117,6 +131,7 @@ class GameMonitorService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
     private var aliveJob: Job? = null
+    private var fpsJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -157,6 +172,8 @@ class GameMonitorService : Service() {
             if (fresh) beginSession(gamePackage, rate, kind, startCheck)
             watch(gamePackage, rate)
         }
+        armFpsPoll(gamePackage)
+        startOverlayIfWanted()
         if (fresh && BackgroundRestrictor.isActive(restrictions)) {
             aliveJob = scope.launch {
                 val due = SystemClock.elapsedRealtime() + BackgroundRestrictor.ALIVE_CHECK_DELAY_MS
@@ -290,9 +307,62 @@ class GameMonitorService : Service() {
         }
     }
 
+    /**
+     * Arms the FPS poll that feeds the overlay. It idles until the overlay is showing and stops
+     * again when it is not, so with the overlay off nothing is read. It uses a sampler of its
+     * own and never touches the session's numbers.
+     */
+    private fun armFpsPoll(gamePackage: String) {
+        fpsJob?.cancel()
+        fpsJob = scope.launch { runFpsPoll(gamePackage) }
+    }
+
+    /** Brings the floating overlay up for this session if the user turned it on and granted "Display over other apps". */
+    private fun startOverlayIfWanted() {
+        if (!BoosterPrefs(applicationContext).overlayEnabled) return
+        if (!FloatingOverlayService.canDraw(applicationContext)) {
+            Log.i(TAG, "Overlay is on but 'Display over other apps' is not granted")
+            return
+        }
+        // A refusal (background foreground-service start) must not take the monitor down.
+        try {
+            FloatingOverlayService.start(applicationContext)
+        } catch (e: Exception) {
+            Log.w(TAG, "Overlay service could not start", e)
+        }
+    }
+
+    private suspend fun runFpsPoll(gamePackage: String) {
+        val sampler = SessionSampler(RamCleaner.shell, gamePackage)
+        while (true) {
+            // Suspends without reading anything while the overlay is not up.
+            FloatingOverlayService.showing.first { it }
+            val tally = OverlayFps()
+            try {
+                while (FloatingOverlayService.showing.value) {
+                    // One SurfaceFlinger read per tick: every extra shell process is load on the
+                    // phone the numbers are being taken from.
+                    val fps = tally.consume(sampler.framesAfter(tally.lastPresentNs))
+                    _fps.value = fps
+                    delay(if (fps != null) OVERLAY_MS else OVERLAY_IDLE_MS)
+                }
+            } finally {
+                _fps.value = null
+            }
+        }
+    }
+
+    private fun stopOverlay() {
+        fpsJob?.cancel()
+        fpsJob = null
+        _fps.value = null
+        FloatingOverlayService.stop(applicationContext)
+    }
+
     private fun finish() {
         _running.value = false
         aliveJob?.cancel()
+        stopOverlay()
         val store = Stores.tuner(applicationContext)
         store.putString(KEY_PACKAGE, null)
         store.putString(KEY_RATE, null)
@@ -302,6 +372,7 @@ class GameMonitorService : Service() {
 
     override fun onDestroy() {
         _running.value = false
+        stopOverlay()
         scope.cancel()
         // Nothing to save here: every path that stops a session ends it through SessionEnd first,
         // and one stopped any other way is still on disk for the watcher or the next app start.
