@@ -78,6 +78,8 @@ Every permission declared in Turbo Optimizer serves a specific, transparent func
 | `WRITE_SYNC_SETTINGS` | Temporarily pauses and restores account auto-synchronization during intensive sessions. |
 | `POST_NOTIFICATIONS` | Displays persistent foreground service notifications to inform the user that optimization is active. |
 | `FOREGROUND_SERVICE` | Keeps the session monitor and local loopback service active while the target task runs in the foreground. |
+| `FOREGROUND_SERVICE_SPECIAL_USE` | Android 14 requires a foreground service type; no system category fits the session monitor, the loopback service or the overlay, so each declares `specialUse` with a stated purpose. |
+| `INTERACT_ACROSS_USERS_FULL` | Declared only to guard the Shizuku provider. It is signature-level, so no other app is ever granted it and no other app can reach the provider. |
 | `SYSTEM_ALERT_WINDOW` | Optional, off by default. Draws a small read-only FPS, CPU and RAM readout over the game while a session runs. Granted by the user in Settings; the readout can only be dragged and sends no input. |
 
 > **Privacy Notice**: Turbo Optimizer does not collect, log, or transmit any personal data, device identifiers, or analytics. Package queries are strictly constrained to applications with launcher intents to populate the app selector.

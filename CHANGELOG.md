@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-11-02
+
+### Added
+- A new layout. In landscape a narrow icon rail switches the right-hand pane between STATUS, OPTIONS and REPORTS, which are the sections the single screen already had; boosting, the game cards and RESTORE stay on the left. In portrait it is still one scrolling column in the old order. Sections are cards with small letter-spaced labels, and the profile, refresh rate, render resolution and FPS cap choices are segmented selectors. Every control and its accessibility description is kept.
+- Main-screen tiles for RAM, battery temperature, and the newest saved session's average FPS and 1% low. A tile with no figure is not drawn: the session tiles appear once a session has measured them, and the battery tile only when the system reports a temperature.
+- HEAVY BACKGROUND APPS, on the STATUS pane: the five running third-party apps holding the most memory, with their size in MB and a used / total line for the phone. STOP force-stops one app, the same command the RAM purge uses, and is not restorable until you open it. RESTRICT adds it to the background restriction list, which a session applies and puts back. This app, Shizuku, your games, the launcher, keyboard, SMS app and dialer are never listed, and are checked again when you tap. CLEAR RAM runs the RAM purge after asking, and stops your other games too. The list is read when the app starts and on REFRESH, not on a timer. Sizes are resident memory, which counts shared pages in every app that uses them.
+- An optional overlay, off by default, under OPTIONS. While a session runs it shows the game's FPS, the phone's CPU load and RAM use in a small window you can drag; where you leave it is remembered. It is read-only and sends no input. Turning it on opens the system's "Display over other apps" screen if that is not granted. It is removed when the session ends, on RESTORE and when the app is closed, and with it off nothing is read for it. A figure that cannot be read shows N/A.
+- Diagnostics rows for the overlay's CPU reading (Supported when `/proc/stat` can be read and parsed, by the app or through Shizuku) and for the graphics driver list.
+- An optional graphics driver list entry, off by default, from Android 10. A boost adds the game's package to the system's graphics driver opt-in list and the session end puts the list back. The value is saved before it is written and read back after; a write that does not read back is reported as Unsupported and put back. A package already on the list is left alone. If another app edits the list during the session, only the entry this app added is taken out. It applies after the game restarts, and its effect on the game is not verified. The Diagnostics row is Supported only when the write, its read-back and the restore all matched.
+- New permission `SYSTEM_ALERT_WINDOW`, for the overlay only. It is granted by you in Settings and nothing uses it while the overlay is off.
+
+### Changed
+- A session ends only when the graphics driver list, like every other setting it changed, reads back as put back; one that does not is retried at the next session end and app start.
+- The Diagnostics panel has two more rows.
+
 ## [1.2.4] - 2026-11-02
 
 ### Added
