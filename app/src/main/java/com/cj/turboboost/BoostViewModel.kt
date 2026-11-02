@@ -229,7 +229,9 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     private suspend fun refreshLastSession() {
-        lastSession = withContext(Dispatchers.IO) { sessions.all().lastOrNull() }
+        val (last, held) = withContext(Dispatchers.IO) { sessions.all().lastOrNull() to BackgroundRestrictor.isActive(restrictionStore) }
+        lastSession = last
+        heavyRestrictHeld = held
     }
 
     // -----------------------------------------------------------------------
@@ -549,15 +551,49 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     var heavyApps by mutableStateOf(HeavyAppsUi())
         private set
 
-    /** Reads the running third-party apps again. */
-    fun refreshHeavyApps() {
+    /** What the system ignored of the last restriction this run, per restricted package; the card's statuses read it. */
+    var heavyRestrictNotes by mutableStateOf<Map<String, List<String>>>(emptyMap())
+        private set
+
+    /** Whether the restriction is held now; false once the session has put it back. */
+    var heavyRestrictHeld by mutableStateOf(false)
+        private set
+    private var heavyRestrictedAtMs = 0L
+
+    /** One status per row the card shows, from reads this app already makes. */
+    fun heavyStatuses(): Map<String, String> {
+        val ui = heavyApps
+        val running = ui.apps.orEmpty().map { it.packageName }.toSet()
+        val alive = HeavyApps.aliveEarlyFor(lastSession, heavyRestrictedAtMs)
+        return (running + ui.stopped + ui.listed + heavyRestrictNotes.keys).mapNotNull { pkg ->
+            HeavyApps.status(
+                stopped = pkg in ui.stopped,
+                running = pkg in running,
+                listed = pkg in ui.listed,
+                notes = heavyRestrictNotes[pkg],
+                aliveEarly = alive?.contains(pkg) == true,
+                held = heavyRestrictHeld
+            )?.let { pkg to it }
+        }.toMap()
+    }
+
+    /**
+     * Reads the running third-party apps again. A stopped mark is dropped unless the app is found
+     * running again; [keepStopped] is for the read straight after a stop.
+     */
+    fun refreshHeavyApps(keepStopped: Boolean = false) {
         if (heavyApps.loading) return
         heavyApps = heavyApps.copy(loading = true)
         val game = selectedGame
         val gamePackages = prefs.games.toSet()
         viewModelScope.launch {
             val loaded = withContext(Dispatchers.IO) { HeavyApps.load(RamCleaner.shell, game, gamePackages) }
-            heavyApps = loaded
+            val running = loaded.apps?.map { it.packageName }?.toSet()
+            val before = heavyApps
+            heavyApps = loaded.copy(
+                stopped = if (running == null) before.stopped else HeavyApps.stoppedAfterRefresh(before.stopped, running, keepStopped),
+                listed = before.listed
+            )
         }
     }
 
@@ -569,6 +605,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val outcome = withContext(Dispatchers.IO) { RamCleaner.stopApp(pkg, game, gamePackages) }
             val name = appName(pkg)
+            if (outcome == StopOutcome.STOPPED) heavyApps = heavyApps.copy(stopped = heavyApps.stopped + pkg)
             _events.send(
                 BoostEvent.ShowToast(
                     when (outcome) {
@@ -579,7 +616,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 )
             )
-            refreshHeavyApps()
+            refreshHeavyApps(keepStopped = true)
         }
     }
 
@@ -608,6 +645,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     saveRestricted(
                         HeavyApps.restrictedWith(restrictList, BackgroundRestrictor.defaultsFor(installed, protected), pkg)
                     )
+                    heavyApps = heavyApps.copy(listed = heavyApps.listed + pkg)
                     if (restrictEnabled) {
                         "$name added to the restriction list. It applies when a boost starts"
                     } else {
@@ -899,7 +937,11 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                     val tune = outcome?.second
                     outcome?.third?.let { restricted ->
                         restrictOutcomes = restricted.packages.associate { it.packageName to it.detail() }
-                        restrictIgnored = restricted.packages.filter { it.skipped == null }.associate { it.packageName to it.ignored }
+                        val ignored = restricted.packages.filter { it.skipped == null }.associate { it.packageName to it.ignored }
+                        restrictIgnored = ignored
+                        heavyRestrictNotes = ignored
+                        heavyRestrictHeld = true
+                        heavyRestrictedAtMs = System.currentTimeMillis()
                         _events.send(BoostEvent.ShowToast(restricted.restrictSummary()))
                     }
                     val stopped = report?.let { stoppedText(it) }
@@ -1325,6 +1367,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun noteRestored(report: RestrictionReport) {
+        if (report.ok) heavyRestrictHeld = false
         if (report.packages.isNotEmpty()) {
             restrictOutcomes = restrictOutcomes + report.packages.associate { it.packageName to "restore: ${it.detail()}" }
         }

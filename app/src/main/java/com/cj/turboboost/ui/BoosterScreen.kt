@@ -148,6 +148,7 @@ fun BoosterScreen(
     comparisonSessions: List<SessionRecord>?,
     onLoadComparison: () -> Unit,
     heavyApps: HeavyAppsUi,
+    heavyStatuses: Map<String, String>,
     onRefreshHeavyApps: () -> Unit,
     onStopHeavyApp: (String) -> Unit,
     onRestrictHeavyApp: (String) -> Unit,
@@ -266,6 +267,7 @@ fun BoosterScreen(
     val heavySection: @Composable () -> Unit = {
         HeavyAppsCard(
             ui = heavyApps,
+            statuses = heavyStatuses,
             ram = deviceStats?.ram,
             shizukuReady = shizukuReady,
             enabled = !busy,

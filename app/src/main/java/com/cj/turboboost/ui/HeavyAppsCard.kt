@@ -1,5 +1,6 @@
 package com.cj.turboboost.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -22,26 +23,27 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.BorderStroke
 import com.cj.turboboost.GameRegistry
-import com.cj.turboboost.HeavyApp
+import com.cj.turboboost.HeavyApps
 import com.cj.turboboost.HeavyAppsUi
 import com.cj.turboboost.RamInfo
 
 /**
  * The five running third-party apps holding the most memory. STOP is the purge's force-stop for
- * one app; RESTRICT puts it on the background restriction list, which a session applies and
- * then puts back.
+ * one app; RESTRICT puts it on the background restriction list, which a boost applies and the
+ * session end then puts back. [statuses] is what this app's own read-backs say about a row.
  */
 @Composable
 fun HeavyAppsCard(
     ui: HeavyAppsUi,
+    statuses: Map<String, String>,
     ram: RamInfo?,
     shizukuReady: Boolean,
     enabled: Boolean,
@@ -88,18 +90,31 @@ fun HeavyAppsCard(
         Spacer(Modifier.height(10.dp))
 
         val apps = ui.apps
+        // Stopped from here and no longer running: still shown, with their result, until a REFRESH.
+        val gone = ui.stopped.filter { pkg -> apps?.none { it.packageName == pkg } != false }
         when {
             !shizukuReady -> Note("Connect Shizuku to list running apps")
-            apps == null -> Note(ui.note ?: if (ui.loading) "Reading the running apps..." else "Not read yet")
-            apps.isEmpty() -> Note("No other apps are running")
+            apps == null && gone.isEmpty() -> Note(ui.note ?: if (ui.loading) "Reading the running apps..." else "Not read yet")
+            apps != null && apps.isEmpty() && gone.isEmpty() -> Note("No other apps are running")
             else -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                apps.forEach { app ->
+                apps.orEmpty().forEach { app ->
                     HeavyAppRow(
-                        app = app,
                         title = GameRegistry.labelFor(context, app.packageName) ?: app.packageName,
+                        megabytes = app.megabytes,
+                        status = statuses[app.packageName],
                         enabled = usable,
                         onStop = { onStop(app.packageName) },
                         onRestrict = { onRestrict(app.packageName) }
+                    )
+                }
+                gone.forEach { pkg ->
+                    HeavyAppRow(
+                        title = GameRegistry.labelFor(context, pkg) ?: pkg,
+                        megabytes = null,
+                        status = statuses[pkg],
+                        enabled = usable,
+                        onStop = { onStop(pkg) },
+                        onRestrict = { onRestrict(pkg) }
                     )
                 }
             }
@@ -126,13 +141,27 @@ private fun Note(text: String) {
     Text(text, color = Tac.TextLo, fontSize = 12.sp, lineHeight = 17.sp)
 }
 
+/** Good news in green, anything the system undid in amber, an unapplied entry in grey. */
+private fun statusColor(status: String): Color = when {
+    status.startsWith(HeavyApps.STATUS_CAME_BACK) || status.contains("bucket ignored") -> Tac.Warn
+    status.startsWith(HeavyApps.STATUS_STOPPED) || status.startsWith(HeavyApps.STATUS_RESTRICTED) -> Tac.Ok
+    else -> Tac.TextLo
+}
+
 @Composable
-private fun HeavyAppRow(app: HeavyApp, title: String, enabled: Boolean, onStop: () -> Unit, onRestrict: () -> Unit) {
+private fun HeavyAppRow(
+    title: String,
+    megabytes: Int?,
+    status: String?,
+    enabled: Boolean,
+    onStop: () -> Unit,
+    onRestrict: () -> Unit
+) {
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(title, color = Tac.TextHi, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                Text("${app.megabytes} MB", color = Tac.TextLo, fontSize = 11.sp, fontFamily = UiFont)
+                Text(megabytes?.let { "$it MB" } ?: "not running", color = Tac.TextLo, fontSize = 11.sp, fontFamily = UiFont)
             }
             TextButton(onClick = onRestrict, enabled = enabled) {
                 Text("RESTRICT", color = if (enabled) Tac.Accent else Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, fontFamily = UiFont)
@@ -148,7 +177,21 @@ private fun HeavyAppRow(app: HeavyApp, title: String, enabled: Boolean, onStop: 
                 Text("STOP", color = if (enabled) Tac.Bg else Tac.TextLo, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, fontFamily = UiFont)
             }
         }
-        Text("Stop: not restorable until opened, and the app may start again. Restrict: applies when a boost starts.", color = Tac.TextLo, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
+        if (status != null) {
+            Text(
+                status,
+                color = statusColor(status),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+        Text(
+            "Stop: not restorable until opened. Restrict: delays this app's notifications, and applies when a boost starts.",
+            color = Tac.TextLo,
+            fontSize = 10.sp,
+            modifier = Modifier.padding(top = 2.dp)
+        )
     }
 }
 

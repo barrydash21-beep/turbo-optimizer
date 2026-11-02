@@ -171,6 +171,7 @@ class MainActivity : ComponentActivity() {
                     comparisonSessions = viewModel.comparisonSessions,
                     onLoadComparison = { viewModel.loadComparison() },
                     heavyApps = viewModel.heavyApps,
+                    heavyStatuses = viewModel.heavyStatuses(),
                     onRefreshHeavyApps = { viewModel.refreshHeavyApps() },
                     onStopHeavyApp = { viewModel.stopHeavyApp(it) },
                     onRestrictHeavyApp = { viewModel.restrictHeavyApp(it) },

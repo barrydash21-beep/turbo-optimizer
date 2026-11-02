@@ -10,7 +10,11 @@ data class HeavyAppsUi(
     val apps: List<HeavyApp>? = null,
     val loading: Boolean = false,
     /** Why there is no list, or what the last action did. */
-    val note: String? = null
+    val note: String? = null,
+    /** Packages stopped from the card: shown with their result until a REFRESH finds them not running. */
+    val stopped: Set<String> = emptySet(),
+    /** Packages put on the restriction list from the card. */
+    val listed: Set<String> = emptySet()
 )
 
 /**
@@ -21,6 +25,13 @@ data class HeavyAppsUi(
 object HeavyApps {
 
     const val LIMIT = 5
+
+    const val STATUS_STOPPED = "Stopped"
+    const val STATUS_RESTRICTED = "Restricted"
+    const val STATUS_BUCKET_IGNORED = "Restricted: bucket ignored by system"
+    const val STATUS_CAME_BACK = "Came back"
+    const val STATUS_LISTED = "On the list: applies at the next boost"
+    private const val LAST_SESSION = " (last session)"
 
     /**
      * Resident set size per process, in kilobytes. RSS counts shared pages in every process
@@ -64,6 +75,47 @@ object HeavyApps {
     /** The list a session restricts once [pkg] is on it: the user's own, or else [defaults]. Never twice. */
     internal fun restrictedWith(current: List<String>?, defaults: List<String>, pkg: String): List<String> =
         ((current ?: defaults) + pkg).distinct()
+
+    /**
+     * What the card says about one row, from reads this app already makes; nothing is polled.
+     *
+     * - Stopped from the card: "Stopped", or "Came back" when a refresh finds it running again.
+     * - A restriction has run for it ([notes], what the system ignored of that restriction):
+     *   "Came back" if it was alive at the check [BackgroundRestrictor.ALIVE_CHECK_DELAY_MS] into
+     *   that session, else "Restricted: bucket ignored by system" when the bucket read-back
+     *   differed, else "Restricted". Once the session has put the restriction back ([held] false)
+     *   these say "(last session)": they are what happened, not what holds now.
+     * - Only put on the list from the card: that it applies at the next boost, as nothing is
+     *   restricted until then.
+     */
+    internal fun status(
+        stopped: Boolean,
+        running: Boolean,
+        listed: Boolean,
+        notes: List<String>?,
+        aliveEarly: Boolean,
+        held: Boolean
+    ): String? = when {
+        stopped -> if (running) STATUS_CAME_BACK else STATUS_STOPPED
+        notes != null -> when {
+            aliveEarly -> STATUS_CAME_BACK
+            notes.any { it.startsWith("bucket ignored") } -> STATUS_BUCKET_IGNORED
+            else -> STATUS_RESTRICTED
+        } + if (held) "" else LAST_SESSION
+        listed -> STATUS_LISTED
+        else -> null
+    }
+
+    /** The restricted apps alive at the early check of the session that ran the restriction, or null. */
+    internal fun aliveEarlyFor(last: SessionRecord?, restrictedAtMs: Long): List<String>? =
+        last?.takeIf { it.startedAtMs >= restrictedAtMs }?.restrictedAliveEarly
+
+    /**
+     * The stopped marks after a read: kept while [keepStopped] (the read straight after a stop),
+     * else only those found running again, which then show as having come back.
+     */
+    internal fun stoppedAfterRefresh(stopped: Set<String>, running: Set<String>, keepStopped: Boolean): Set<String> =
+        if (keepStopped) stopped else stopped.filter { it in running }.toSet()
 
     /** Reads the card's rows through Shizuku. Blocking: call off the main thread. */
     fun load(shell: ShellExecutor, selectedGame: String?, games: Set<String>): HeavyAppsUi {
