@@ -74,7 +74,9 @@ data class SessionEndOutcome(
     /** The game mode a profile switched, put back ([ProfileGameMode.restore]). */
     val gameMode: GameModeOutcome = GameModeOutcome(true, "nothing held"),
     /** The user's own settings put back; null when no snapshot was held. */
-    val system: StepReport? = null
+    val system: StepReport? = null,
+    /** The graphics driver opt-in list put back ([GraphicsDriver.restore]). */
+    val driver: DriverOutcome = DriverOutcome(true, "nothing held")
 )
 
 /**
@@ -270,20 +272,23 @@ object SessionEnd {
         // Before the reference is read: the mode it holds afterwards is the game's own again.
         val gameMode = ProfileGameMode.restore(ctx.shell, ctx.gameResolution)
         log { Log.i(TAG, "Session end (${reason.code}): game mode ${gameMode.detail}") }
+        // The driver opt-in list goes back to exactly what it was; held until it reads back.
+        val driver = GraphicsDriver.restore(ctx.shell, ctx.gameResolution)
+        log { Log.i(TAG, "Session end (${reason.code}): graphics driver list ${driver.detail}") }
 
         // What the game holds once this session's own changes are undone is the next session's reference.
         if (open && pkg != null && ctx.shell.isAvailable()) {
             GameStateRef.save(ctx.gameResolution, pkg, GameStateRef.read(ctx.shell, pkg), GameResolution.bootId(ctx.shell))
         }
 
-        val restored = held.allRestored && gameMode.ok
+        val restored = held.allRestored && gameMode.ok && driver.ok
         if (restored && open && store.getBoolean(KEY_RECORD_SAVED, false)) {
             SessionWatcher.stop(ctx.shell)
             SessionWatcher.clearData(ctx.shell)
             SESSION_KEYS.forEach { store.putStringNow(it, null) }
             store.putStringNow(KEY_STATE, STATE_ENDED)
         }
-        return SessionEndOutcome(restored && (!open || state(store) == STATE_ENDED), record, tweaks, restricted, gameMode, held.system)
+        return SessionEndOutcome(restored && (!open || state(store) == STATE_ENDED), record, tweaks, restricted, gameMode, held.system, driver)
     }
 
     /** [saveRecordOnce], returning the record saved now. */

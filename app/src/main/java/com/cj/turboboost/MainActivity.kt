@@ -178,7 +178,10 @@ class MainActivity : ComponentActivity() {
                     overlayEnabled = viewModel.overlayEnabled,
                     overlayPermitted = viewModel.overlayPermitted,
                     onOverlayEnabledChange = { viewModel.turnOverlay(it) },
-                    onGrantOverlay = { viewModel.turnOverlay(true) }
+                    onGrantOverlay = { viewModel.turnOverlay(true) },
+                    driverOptIn = viewModel.driverOptIn,
+                    driverSupported = viewModel.driverSupported,
+                    onDriverOptInChange = { viewModel.turnDriverOptIn(it) }
                 )
             }
         }

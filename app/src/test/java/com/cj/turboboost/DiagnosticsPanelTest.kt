@@ -91,7 +91,7 @@ class DiagnosticsPanelTest {
     @Test
     fun `every row has a status and evidence`() {
         val rows = DiagnosticsPanel.rows(input())
-        assertEquals(11, rows.size)
+        assertEquals(12, rows.size)
         assertTrue(rows.all { it.evidence.isNotBlank() })
         assertEquals(CheckStatus.SUPPORTED, row(rows, "Android").status)
         assertEquals("Android 16, SDK 36", row(rows, "Android").evidence)

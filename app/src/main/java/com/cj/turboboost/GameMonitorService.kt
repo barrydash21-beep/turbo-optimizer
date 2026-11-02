@@ -158,6 +158,7 @@ class GameMonitorService : Service() {
         val baseline = fresh && kind == SessionRecord.BASELINE
         val active = PerformanceTuner.isActive(store) || BackgroundRestrictor.isActive(restrictions) ||
             ProfileGameMode.held(Stores.gameResolution(applicationContext)) ||
+            GraphicsDriver.held(Stores.gameResolution(applicationContext)) ||
             SystemSnapshot.exists(Stores.snapshot(applicationContext)) || open || baseline
         if (gamePackage == null || rate == null || !active) {
             finish()

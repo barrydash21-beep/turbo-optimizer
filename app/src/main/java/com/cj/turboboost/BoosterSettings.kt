@@ -109,6 +109,11 @@ class BoosterPrefs(private val store: KeyValueStore) {
         get() = store.getBoolean(KEY_OVERLAY, false)
         set(value) = store.putBoolean(KEY_OVERLAY, value)
 
+    /** Whether a boost adds the game to the graphics driver opt-in list. Off until the user turns it on. */
+    var driverOptIn: Boolean
+        get() = store.getBoolean(KEY_DRIVER, false)
+        set(value) = store.putBoolean(KEY_DRIVER, value)
+
     /** Package of the game the user picked, or null before the first pick. */
     var selectedGame: String?
         get() = store.getString(KEY_GAME)
@@ -129,6 +134,7 @@ class BoosterPrefs(private val store: KeyValueStore) {
         const val KEY_RESTRICT = "restrict_background"
         const val KEY_RESTRICT_LIST = "restricted_apps"
         const val KEY_OVERLAY = "overlay_enabled"
+        const val KEY_DRIVER = "driver_opt_in"
         const val PREFIX_RATE = "rate_"
     }
 }

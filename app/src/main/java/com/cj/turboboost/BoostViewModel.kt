@@ -471,6 +471,23 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // -----------------------------------------------------------------------
+    // Graphics driver opt-in
+    // -----------------------------------------------------------------------
+
+    /** Whether a boost adds the game to the driver opt-in list. Off until the user turns it on. */
+    var driverOptIn by mutableStateOf(prefs.driverOptIn)
+        private set
+
+    /** The setting exists from Android 10; below that the switch is shown off and cannot be turned on. */
+    val driverSupported: Boolean = Build.VERSION.SDK_INT >= GraphicsDriver.MIN_SDK
+
+    fun turnDriverOptIn(enabled: Boolean) {
+        val on = enabled && driverSupported
+        driverOptIn = on
+        prefs.driverOptIn = on
+    }
+
+    // -----------------------------------------------------------------------
     // Floating overlay
     // -----------------------------------------------------------------------
 
@@ -749,7 +766,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
     private fun prepareBaseline(pkg: String, chosenRate: Float): BaselineStart {
         val open = SessionEnd.state(sessionStore).let { it == SessionEnd.STATE_ACTIVE || it == SessionEnd.STATE_ENDING }
         val held = Baseline.Held(
-            tweaks = PerformanceTuner.isActive(tunerStore) || ProfileGameMode.held(resolutionStore),
+            tweaks = PerformanceTuner.isActive(tunerStore) || ProfileGameMode.held(resolutionStore) || GraphicsDriver.held(resolutionStore),
             restriction = BackgroundRestrictor.isActive(restrictionStore),
             systemSnapshot = SystemSnapshot.exists(snapshot),
             gamePreset = GameResolution.holds(resolutionStore, pkg),
@@ -861,6 +878,9 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                             // resolution preset lives in the game's custom mode: keep that mode.
                             val keepMode = GameResolution.holds(resolutionStore, gamePackage)
                             val report = RamCleaner.applyProfile(active, gamePackage, snapshot, resolutionStore, keepGameMode = keepMode)
+                            // Off by default; saves the list's prior value itself and puts it back at the session end.
+                            val driver = if (driverOptIn) GraphicsDriver.apply(RamCleaner.shell, resolutionStore, gamePackage) else null
+                            driver?.takeIf { !it.ok }?.let { _events.trySend(BoostEvent.ShowToast("Graphics driver list: ${it.detail}")) }
                             // (b) The per-game rate and power mode. Saves the originals itself.
                             Triple(report, PerformanceTuner.applyGamingTweaks(tunerStore, game, rate), restricted)
                         }
@@ -887,7 +907,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
 
                     // (c) Whatever happened above, if tweaks are on something must undo them.
                     if (PerformanceTuner.isActive(tunerStore) || BackgroundRestrictor.isActive(restrictionStore) ||
-                        ProfileGameMode.held(resolutionStore) || SystemSnapshot.exists(snapshot)
+                        ProfileGameMode.held(resolutionStore) || GraphicsDriver.held(resolutionStore) || SystemSnapshot.exists(snapshot)
                     ) {
                         try {
                             GameMonitorService.start(app, gamePackage, rate, active.name, startCheck)
@@ -1224,6 +1244,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
             thermalDump = if (ready) shell.capture("dumpsys thermalservice") else null,
             cpuStat = cpu.readRaw(),
             cpuStatVia = cpu.via,
+            driverResult = GraphicsDriver.lastResult(resolutionStore),
             restrictIgnored = restrictIgnored
         )
     }
@@ -1276,7 +1297,10 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                         val end = SessionEnd.finish(SessionContext.of(app), EndReason.MANUAL)
                         withContext(Dispatchers.Main) { noteRestored(end.restrictions) }
                         val failed = end.tweaks.failed + end.restrictions.failedPackages.map { "Background app $it" } +
-                            listOfNotNull("Game mode (${end.gameMode.detail})".takeIf { !end.gameMode.ok })
+                            listOfNotNull(
+                                "Game mode (${end.gameMode.detail})".takeIf { !end.gameMode.ok },
+                                "Graphics driver list (${end.driver.detail})".takeIf { !end.driver.ok }
+                            )
                         if (failed.isEmpty()) system else system.copy(failed = system.failed + failed)
                     }
                 }
@@ -1351,7 +1375,7 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
                 val (tweaks, restrictions) = withContext(Dispatchers.IO) {
                     // A game mode a profile switched, or the user's own settings still changed,
                     // count as held tweaks: the end puts them back too.
-                    (PerformanceTuner.isActive(tunerStore) || ProfileGameMode.held(resolutionStore) || SystemSnapshot.exists(snapshot)) to
+                    (PerformanceTuner.isActive(tunerStore) || ProfileGameMode.held(resolutionStore) || GraphicsDriver.held(resolutionStore) || SystemSnapshot.exists(snapshot)) to
                         BackgroundRestrictor.isActive(restrictionStore)
                 }
                 val open = SessionEnd.state(sessionStore).let { it == SessionEnd.STATE_ACTIVE || it == SessionEnd.STATE_ENDING }

@@ -58,6 +58,8 @@ data class DiagnosticsInput(
     val cpuStat: String? = null,
     /** Who read [cpuStat]: "the app" or "Shizuku". */
     val cpuStatVia: String? = null,
+    /** What the last driver opt-in write and restore showed; null before it has ever run. */
+    val driverResult: DriverResult? = null,
     /** Per restricted package, what the system ignored in this app run's last restriction; null when none ran. */
     val restrictIgnored: Map<String, List<String>>?
 )
@@ -116,7 +118,8 @@ object DiagnosticsPanel {
         fpsCapRow(input),
         thermalRow(input),
         restrictionRow(input),
-        cpuRow(input)
+        cpuRow(input),
+        driverRow(input)
     )
 
     private fun androidRow(input: DiagnosticsInput) = DiagnosticRow(
@@ -259,6 +262,21 @@ object DiagnosticsPanel {
             }
             DiagnosticRow(name, CheckStatus.UNSUPPORTED, "/proc/stat $why; the overlay shows N/A")
         }
+    }
+
+    /**
+     * The graphics driver opt-in list. Supported only when a write, its read-back and the
+     * restore all matched; that says the setting can be set and put back, not that the game
+     * uses the driver or runs any differently.
+     */
+    private fun driverRow(input: DiagnosticsInput): DiagnosticRow {
+        val name = "Graphics driver opt-in"
+        if (input.sdk < GraphicsDriver.MIN_SDK) {
+            return DiagnosticRow(name, CheckStatus.UNSUPPORTED, "Needs Android 10 (SDK ${GraphicsDriver.MIN_SDK}) or later, this is SDK ${input.sdk}")
+        }
+        val result = input.driverResult ?: return DiagnosticRow(name, CheckStatus.NOT_CHECKED, "No session has used it yet; off by default")
+        val tail = if (result.status == CheckStatus.SUPPORTED) "; the effect on the game is unverified" else ""
+        return DiagnosticRow(name, result.status, result.note + tail)
     }
 
     private fun restrictionRow(input: DiagnosticsInput): DiagnosticRow {

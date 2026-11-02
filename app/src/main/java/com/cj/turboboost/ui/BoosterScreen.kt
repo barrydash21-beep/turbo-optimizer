@@ -155,7 +155,10 @@ fun BoosterScreen(
     overlayEnabled: Boolean,
     overlayPermitted: Boolean,
     onOverlayEnabledChange: (Boolean) -> Unit,
-    onGrantOverlay: () -> Unit
+    onGrantOverlay: () -> Unit,
+    driverOptIn: Boolean,
+    driverSupported: Boolean,
+    onDriverOptInChange: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val busy = step != BoostStep.IDLE
@@ -213,13 +216,16 @@ fun BoosterScreen(
             restrictEnabled = restrictEnabled,
             overlayEnabled = overlayEnabled,
             overlayPermitted = overlayPermitted,
+            driverOptIn = driverOptIn,
+            driverSupported = driverSupported,
             enabled = !busy,
             onProfileChange = onProfileChange,
             onVpnEnabledChange = onVpnEnabledChange,
             onRestrictEnabledChange = onRestrictEnabledChange,
             onEditRestricted = onOpenRestrictEditor,
             onOverlayEnabledChange = onOverlayEnabledChange,
-            onGrantOverlay = onGrantOverlay
+            onGrantOverlay = onGrantOverlay,
+            onDriverOptInChange = onDriverOptInChange
         )
     }
     val statusCards: @Composable () -> Unit = {
@@ -793,13 +799,16 @@ private fun OptionsModule(
     restrictEnabled: Boolean,
     overlayEnabled: Boolean,
     overlayPermitted: Boolean,
+    driverOptIn: Boolean,
+    driverSupported: Boolean,
     enabled: Boolean,
     onProfileChange: (BoostProfile) -> Unit,
     onVpnEnabledChange: (Boolean) -> Unit,
     onRestrictEnabledChange: (Boolean) -> Unit,
     onEditRestricted: () -> Unit,
     onOverlayEnabledChange: (Boolean) -> Unit,
-    onGrantOverlay: () -> Unit
+    onGrantOverlay: () -> Unit,
+    onDriverOptInChange: (Boolean) -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.5f),
@@ -975,6 +984,43 @@ private fun OptionsModule(
                     modifier = Modifier.semantics { contentDescription = "Show the FPS, CPU and RAM overlay during a session" },
                     checked = overlayEnabled,
                     onCheckedChange = onOverlayEnabledChange,
+                    colors = optionSwitchColors()
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            HorizontalDivider(color = Tac.Line, thickness = 1.dp)
+            Spacer(Modifier.height(12.dp))
+
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "GRAPHICS DRIVER LIST",
+                        color = Tac.TextHi,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = UiFont
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        when {
+                            !driverSupported -> "Needs Android 10 or later"
+                            driverOptIn -> "Adds the game to the system's graphics driver opt-in list for the session and puts the list back after. Applies after the game restarts. Effect unverified."
+                            else -> "Left untouched"
+                        },
+                        color = Tac.TextLo,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp
+                    )
+                }
+                Switch(
+                    modifier = Modifier.semantics { contentDescription = "Add the game to the graphics driver opt-in list during a session" },
+                    checked = driverOptIn && driverSupported,
+                    onCheckedChange = onDriverOptInChange,
+                    enabled = enabled && driverSupported,
                     colors = optionSwitchColors()
                 )
             }
