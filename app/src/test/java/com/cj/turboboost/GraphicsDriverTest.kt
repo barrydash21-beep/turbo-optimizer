@@ -181,6 +181,108 @@ class GraphicsDriverTest {
         assertEquals("com.a", shell.value)
     }
 
+    // ---- the restore guard ----
+
+    @Test fun `unchanged since the write, the exact prior text goes back`() {
+        val shell = DriverSettingsShell("com.a,  com.b")
+        val store = FakeStore()
+        apply(shell, store)
+        assertTrue(GraphicsDriver.restore(shell, store).ok)
+        assertEquals("com.a,  com.b", shell.value)
+        assertEquals(CheckStatus.SUPPORTED, GraphicsDriver.lastResult(store)!!.status)
+    }
+
+    @Test fun `edited by another app, only our package comes out and every other entry stays`() {
+        val shell = DriverSettingsShell("com.a")
+        val store = FakeStore()
+        apply(shell, store)
+        // Another app added its own entry and reordered the list during the session.
+        shell.value = "com.x,com.a,$game,com.y"
+        val out = GraphicsDriver.restore(shell, store)
+        assertTrue(out.ok)
+        assertEquals("com.x,com.a,com.y", shell.value)
+        assertFalse(GraphicsDriver.held(store))
+        assertEquals(CheckStatus.UNVERIFIED, GraphicsDriver.lastResult(store)!!.status)
+    }
+
+    @Test fun `edited by another app that already took ours out is left exactly as it is`() {
+        val shell = DriverSettingsShell("com.a")
+        val store = FakeStore()
+        apply(shell, store)
+        shell.value = "com.a,com.z"
+        assertTrue(GraphicsDriver.restore(shell, store).ok)
+        assertEquals("com.a,com.z", shell.value)
+        assertFalse(shell.commands.any { it.startsWith("settings put") && it.endsWith("'com.a,com.z'") })
+        assertFalse(GraphicsDriver.held(store))
+    }
+
+    @Test fun `an unset prior that another app then added to keeps their entry and loses ours`() {
+        val shell = DriverSettingsShell(null)
+        val store = FakeStore()
+        apply(shell, store)
+        shell.value = "$game,com.x"
+        assertTrue(GraphicsDriver.restore(shell, store).ok)
+        assertEquals("com.x", shell.value)
+    }
+
+    @Test fun `an unset prior that another app deleted again is left unset`() {
+        val shell = DriverSettingsShell(null)
+        val store = FakeStore()
+        apply(shell, store)
+        shell.value = null
+        assertTrue(GraphicsDriver.restore(shell, store).ok)
+        assertNull(shell.value)
+        assertFalse(GraphicsDriver.held(store))
+    }
+
+    @Test fun `a package that was already present is not written and not removed`() {
+        val shell = DriverSettingsShell("com.a,$game")
+        val store = FakeStore()
+        assertTrue(apply(shell, store).ok)
+        assertFalse(GraphicsDriver.held(store))
+        shell.value = "com.a,$game,com.x"
+        assertTrue(GraphicsDriver.restore(shell, store).ok)
+        assertEquals("com.a,$game,com.x", shell.value)
+        assertFalse(shell.commands.any { it.startsWith("settings put") || it.startsWith("settings delete") })
+    }
+
+    @Test fun `a second boost keeps the package it added and still leaves a pre-existing one alone`() {
+        val shell = DriverSettingsShell("com.a,com.example.other")
+        val store = FakeStore()
+        apply(shell, store)
+        apply(shell, store, pkg = "com.example.other")
+        shell.value = "com.a,com.example.other,$game,com.x"
+        assertTrue(GraphicsDriver.restore(shell, store).ok)
+        assertEquals("com.a,com.example.other,com.x", shell.value)
+    }
+
+    @Test fun `a removal that does not read back stays held and is retried`() {
+        val shell = DriverSettingsShell("com.a")
+        val store = FakeStore()
+        apply(shell, store)
+        shell.value = "com.a,$game,com.x"
+        shell.failsPut = true
+        val out = GraphicsDriver.restore(shell, store)
+        assertFalse(out.ok)
+        assertTrue(GraphicsDriver.held(store))
+        assertEquals("com.a,$game,com.x", shell.value)
+        shell.failsPut = false
+        assertTrue(GraphicsDriver.restore(shell, store).ok)
+        assertEquals("com.a,com.x", shell.value)
+    }
+
+    @Test fun `a list unreadable at the restore stays held`() {
+        val shell = DriverSettingsShell("com.a")
+        val store = FakeStore()
+        apply(shell, store)
+        shell.unreadable = true
+        assertFalse(GraphicsDriver.restore(shell, store).ok)
+        assertTrue(GraphicsDriver.held(store))
+        shell.unreadable = false
+        assertTrue(GraphicsDriver.restore(shell, store).ok)
+        assertEquals("com.a", shell.value)
+    }
+
     // ---- the mismatch path ----
 
     @Test fun `a write the system ignores is Unsupported and leaves the list as it was`() {

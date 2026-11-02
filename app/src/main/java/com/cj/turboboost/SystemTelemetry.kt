@@ -2,6 +2,9 @@ package com.cj.turboboost
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.view.Display
@@ -56,6 +59,18 @@ object SystemTelemetry {
         } catch (e: Exception) {
             RamInfo.from(0L, 0L)
         }
+    }
+
+    /**
+     * The battery temperature in degrees Celsius from the sticky battery broadcast, or null when
+     * the system does not report one. A read of what the system already holds: it registers
+     * nothing and runs nothing.
+     */
+    fun getBatteryTempC(context: Context): Float? = try {
+        val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        BatteryTemp.fromTenths(intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, BatteryTemp.MISSING))
+    } catch (e: Exception) {
+        null
     }
 
     /**
@@ -164,4 +179,18 @@ object RefreshRate {
     /** The next supported rate below [current], or null when [current] is already the lowest. */
     fun nextLower(current: Float, supported: List<Float>): Float? =
         supported.filter { it < current }.maxOrNull()
+}
+
+/** The battery broadcast reports tenths of a degree. Pure, so it is unit-tested. */
+object BatteryTemp {
+
+    /** What `getIntExtra` returns when the broadcast has no temperature. */
+    const val MISSING = Int.MIN_VALUE
+
+    /** Celsius, or null for a missing value or one that cannot be a battery (below -40 or above 120 degrees). */
+    fun fromTenths(tenths: Int?): Float? {
+        if (tenths == null || tenths == MISSING) return null
+        val celsius = tenths / 10f
+        return celsius.takeIf { it in -40f..120f }
+    }
 }

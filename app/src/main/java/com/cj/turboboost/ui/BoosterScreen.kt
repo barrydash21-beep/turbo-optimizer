@@ -158,7 +158,8 @@ fun BoosterScreen(
     onGrantOverlay: () -> Unit,
     driverOptIn: Boolean,
     driverSupported: Boolean,
-    onDriverOptInChange: (Boolean) -> Unit
+    onDriverOptInChange: (Boolean) -> Unit,
+    lastSession: SessionRecord?
 ) {
     val context = LocalContext.current
     val busy = step != BoostStep.IDLE
@@ -176,10 +177,14 @@ fun BoosterScreen(
 
     // Refresh rate is polled alongside RAM rather than remembered once, so the DISPLAY tile
     // updates after the boost changes the rate (L1).
-    val deviceStats by produceState<Pair<RamInfo, Float>?>(null, context, lifecycleOwner) {
+    val deviceStats by produceState<DeviceStats?>(null, context, lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
-                value = SystemTelemetry.getRamInfo(context) to SystemTelemetry.getRefreshRate(context)
+                value = DeviceStats(
+                    SystemTelemetry.getRamInfo(context),
+                    SystemTelemetry.getRefreshRate(context),
+                    SystemTelemetry.getBatteryTempC(context)
+                )
                 delay(3000)
             }
         }
@@ -263,7 +268,7 @@ fun BoosterScreen(
     val heavySection: @Composable () -> Unit = {
         HeavyAppsCard(
             ui = heavyApps,
-            ram = deviceStats?.first,
+            ram = deviceStats?.ram,
             shizukuReady = shizuku == ShizukuState.READY,
             enabled = !busy,
             onRefresh = onRefreshHeavyApps,
@@ -274,14 +279,11 @@ fun BoosterScreen(
     }
     val statTiles: @Composable () -> Unit = {
         TelemetryDashboard(
-            ram = deviceStats?.first,
+            ram = deviceStats?.ram,
             reachabilityMs = reachability,
-            hz = deviceStats?.second?.let { RefreshRate.display(it) },
-            // No live source is wired for these yet; they read N/A rather than a guess.
-            cpuPercent = null,
-            gpuPercent = null,
-            fps = null,
-            thermalStatus = null
+            hz = deviceStats?.hz?.let { RefreshRate.display(it) },
+            batteryTempC = deviceStats?.batteryTempC,
+            lastSession = lastSession
         )
     }
     // Always reachable: the system changes a boost makes (DND, animation scales,
@@ -1973,44 +1975,38 @@ private fun Header() {
     }
 }
 
-/** Thermal state as a chip; null is "N/A", never a guessed level. */
-@Composable
-private fun ThermalPill(status: Int?) {
-    val color = when {
-        status == null -> Tac.TextLo
-        status <= 1 -> Tac.Ok
-        status == 2 -> Tac.Warn
-        else -> Tac.Danger
-    }
-    val word = status?.let { THERMAL_NAMES.getOrElse(it) { "unknown" }.uppercase(Locale.US) } ?: "N/A"
-    StatusPill("THERMAL $word", color)
-}
+/** What the 3 s device read returns. */
+private data class DeviceStats(val ram: RamInfo, val hz: Float, val batteryTempC: Float?)
+
+private class DashTile(val label: String, val value: String, val unit: String? = null, val progress: Float? = null)
 
 /**
- * CPU, GPU, RAM and FPS as large tiles. A figure that has no source reads "N/A"; REACH and
- * DISPLAY stay below as smaller cards.
+ * RAM and battery temperature as large tiles, and the newest saved session's average FPS and 1%
+ * low. A figure with no source is not drawn: the session tiles are absent until a session has
+ * measured them, and the battery tile when the system reports no temperature. REACH and DISPLAY
+ * stay below as smaller cards.
  */
 @Composable
 private fun TelemetryDashboard(
     ram: RamInfo?,
     reachabilityMs: Int,
     hz: Int?,
-    cpuPercent: Int?,
-    gpuPercent: Int?,
-    fps: Int?,
-    thermalStatus: Int?
+    batteryTempC: Float?,
+    lastSession: SessionRecord?
 ) {
     val tile = Modifier.fillMaxHeight()
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        ThermalPill(thermalStatus)
-        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatTile("CPU", cpuPercent?.toString(), tile.weight(1f), unit = "%")
-            StatTile("GPU", gpuPercent?.toString(), tile.weight(1f), unit = "%")
-        }
-        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            val used = ram?.used?.takeIf { it != "--" }
-            StatTile("RAM", used, tile.weight(1f), unit = ram?.total?.let { "of $it" }, progress = ram?.fraction)
-            StatTile("FPS", fps?.toString(), tile.weight(1f))
+        val used = ram?.used?.takeIf { it != "--" }
+        val tiles = listOfNotNull(
+            lastSession?.avgFps?.let { DashTile("AVG FPS", fpsText(it), "last session") },
+            lastSession?.onePercentLowFps?.let { DashTile("1% LOW", fpsText(it), "last session") },
+            used?.let { DashTile("RAM", it, "of ${ram.total}", ram.fraction) },
+            batteryTempC?.let { DashTile("BATTERY", tempText(it)) }
+        )
+        tiles.chunked(2).forEach { pair ->
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                pair.forEach { StatTile(it.label, it.value, tile.weight(1f), it.unit, it.progress) }
+            }
         }
         val reachColor = when {
             reachabilityMs < 0 -> Tac.TextLo

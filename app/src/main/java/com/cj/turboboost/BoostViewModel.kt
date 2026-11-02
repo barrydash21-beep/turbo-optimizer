@@ -220,6 +220,16 @@ class BoostViewModel(app: Application) : AndroidViewModel(app) {
         // Fires once now and again whenever the monitor saves a session, so a summary shows
         // even if the booster is already open when the game exits.
         viewModelScope.launch { SessionStore.saved.collect { checkSummary() } }
+        // Read once now and again whenever a session is saved: nothing polls for it.
+        viewModelScope.launch { SessionStore.saved.collect { refreshLastSession() } }
+    }
+
+    /** The newest saved session, for the main screen's average FPS and 1% low; null before any. */
+    var lastSession by mutableStateOf<SessionRecord?>(null)
+        private set
+
+    private suspend fun refreshLastSession() {
+        lastSession = withContext(Dispatchers.IO) { sessions.all().lastOrNull() }
     }
 
     // -----------------------------------------------------------------------
